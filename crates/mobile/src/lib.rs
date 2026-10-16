@@ -14,6 +14,7 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use lightcraft_engine::catalog::PhotoId;
+use lightcraft_engine::export::{ExportOptions, export_photo};
 use lightcraft_engine::{EngineError, RenderJob, Session};
 use serde_json::{Value, json};
 
@@ -102,6 +103,24 @@ impl Mobile {
         let job = self.lock().thumb_job(PhotoId(photo), edge).ok_or_else(|| format!("no photo {photo}"))?;
         run(job)
     }
+
+    /// Export `photo` with its edits through the engine's one encoder (`options` are the export
+    /// dialog's JSON: `format`, `quality`, `width`…) and write it into the directory `dir`. Returns the
+    /// path written, for the share sheet.
+    pub fn export(&self, photo: u64, options: &str, dir: &str) -> Result<String, String> {
+        let options: Value = match options.trim() {
+            "" => json!({}),
+            o => serde_json::from_str(o).map_err(|e| format!("export options are not JSON: {e}"))?,
+        };
+        let o = ExportOptions::from_json(&options);
+        let out = export_photo(&mut self.lock(), PhotoId(photo), &o, 1)?;
+        // the engine names the file; keep only its last component so it stays inside `dir`
+        let name = std::path::Path::new(&out.file_name).file_name().ok_or_else(|| format!("bad export name {:?}", out.file_name))?;
+        let path = std::path::Path::new(dir).join(name);
+        std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
+        std::fs::write(&path, &out.bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(path.to_string_lossy().into_owned())
+    }
 }
 
 fn clamp_edge(edge: u32) -> Result<usize, String> {
@@ -167,6 +186,18 @@ mod tests {
         assert!(m.render(u64::MAX, 100, 100, false, false).is_err());
         assert!(m.render(m.photos()[0], 0, 100, false, false).is_err());
         assert!(m.thumbnail(m.photos()[0], 0).is_err());
+    }
+
+    #[test]
+    fn export_writes_a_jpeg_into_the_folder() {
+        let m = Mobile::demo();
+        let dir = std::env::temp_dir().join(format!("lightcraft-mobile-export-{}", std::process::id()));
+        let path = m.export(m.photos()[0], r#"{"format":"jpeg","width":96}"#, dir.to_str().unwrap()).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(path.starts_with(dir.to_str().unwrap()) && bytes.starts_with(&[0xff, 0xd8]), "{path}");
+        assert!(m.export(u64::MAX, "", dir.to_str().unwrap()).is_err());
+        assert!(m.export(m.photos()[0], "{bad", dir.to_str().unwrap()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

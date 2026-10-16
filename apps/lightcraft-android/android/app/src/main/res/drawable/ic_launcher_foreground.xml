@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original work (LightCraft): an aperture-like sun over a horizon line, drawn as plain vectors. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#FFF2B33D" android:pathData="M54,30a16,16 0,1 1,0 32a16,16 0,1 1,0 -32z" />
+    <path android:fillColor="#FF5DA9E9" android:pathData="M28,68h52v5h-52z" />
+    <path android:fillColor="#FF5DA9E9" android:pathData="M36,77h36v4h-36z" />
+</vector>

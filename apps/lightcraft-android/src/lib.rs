@@ -219,6 +219,30 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeThumb
     }
 }
 
+/// Export `photo` into the folder `dir` with the export dialog's JSON `options`; returns the path
+/// written, or throws `IllegalStateException` with the reason.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeExport<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    options: JString<'l>,
+    dir: JString<'l>,
+) -> jstring {
+    let r = rust_string(&mut env, &options).and_then(|options| {
+        let dir = rust_string(&mut env, &dir)?;
+        guarded(|| session(handle)?.export(photo_id(photo)?, &options, &dir))
+    });
+    match r {
+        Ok(path) => java_string(&mut env, &path),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
