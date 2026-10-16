@@ -9,18 +9,21 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-/** The editor palette: near-black chrome around the photo, grey labels, one blue accent. */
+/** The editor palette: black around the photo, charcoal bars, grey labels, one blue accent. */
 object Lc {
     val canvas = Color(0xFF000000)
-    val chrome = Color(0xFF121212)
-    val panel = Color(0xFF1B1B1B)
-    val raised = Color(0xFF2A2A2A)
-    val divider = Color(0xFF2E2E2E)
-    val text = Color(0xFFF0F0F0)
-    val label = Color(0xFFB4B4B4)
-    val muted = Color(0xFF7A7A7A)
-    val track = Color(0xFF4A4A4A)
-    val accent = Color(0xFF3B8EEA)
+    val chrome = Color(0xFF1E1E1E)
+    val bar = Color(0xFF232323)
+    val panel = Color(0xF21E1E1E)
+    val raised = Color(0xFF3A3A3A)
+    val divider = Color(0xFF3A3A3A)
+    val text = Color(0xFFF2F2F2)
+    val label = Color(0xFFC8C8C8)
+    val muted = Color(0xFF8A8A8A)
+    val track = Color(0xFF6A6A6A)
+    val thumb = Color(0xFF2E2E2E)
+    val accent = Color(0xFF2F7DF6)
+    val pill = Color(0xCC1A1A1A)
 }
 
 private val Scheme = darkColorScheme(
@@ -28,7 +31,7 @@ private val Scheme = darkColorScheme(
     onPrimary = Color.White,
     secondary = Lc.accent,
     background = Lc.chrome,
-    surface = Lc.panel,
+    surface = Lc.chrome,
     surfaceVariant = Lc.raised,
     onBackground = Lc.text,
     onSurface = Lc.text,
@@ -37,11 +40,12 @@ private val Scheme = darkColorScheme(
 )
 
 private val Type = Typography(
+    headlineSmall = TextStyle(fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Lc.text),
     titleLarge = TextStyle(fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Lc.text),
-    titleMedium = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Lc.text),
+    titleMedium = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Lc.text),
     bodyMedium = TextStyle(fontSize = 14.sp, color = Lc.label),
     bodySmall = TextStyle(fontSize = 12.sp, color = Lc.muted),
-    labelSmall = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium),
+    labelSmall = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.Medium),
 )
 
 @Composable

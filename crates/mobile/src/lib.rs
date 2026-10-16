@@ -208,6 +208,20 @@ impl Mobile {
         }
     }
 
+    /// A thumbnail of `photo` as preset `preset` would leave it (the presets strip); nothing is
+    /// applied.
+    pub fn preset_thumbnail(&self, photo: u64, preset: &str, long_edge: u32) -> Result<Frame, String> {
+        let edge = clamp_edge(long_edge)?;
+        let job = {
+            let mut s = self.lock();
+            let p = s.presets.iter().find(|p| p.id == preset).cloned().ok_or_else(|| format!("no preset {preset}"))?;
+            let d = s.develop_of(PhotoId(photo)).ok_or_else(|| format!("no photo {photo}"))?;
+            let settings = p.apply(&d, 1.0);
+            s.variant_job(PhotoId(photo), &settings, edge).ok_or_else(|| format!("no photo {photo}"))?
+        };
+        run(job)
+    }
+
     fn cutout(&self) -> MutexGuard<'_, Option<Cutout>> {
         self.cutout.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -454,6 +468,19 @@ mod tests {
         m.cutout_end();
         assert!(m.cutout_undo().is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preset_thumbnails_render_without_applying() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        let list = parse(&m.execute("presets.list", ""));
+        let preset = list["result"][0]["id"].as_str().unwrap().to_string();
+        let before = parse(&m.execute("develop.get", &json!({"id": id}).to_string()));
+        assert!(m.preset_thumbnail(id, &preset, 96).is_ok());
+        assert_eq!(parse(&m.execute("develop.get", &json!({"id": id}).to_string())), before);
+        assert!(m.preset_thumbnail(id, "no-such", 96).is_err());
+        assert!(m.preset_thumbnail(u64::MAX, &preset, 96).is_err());
     }
 
     #[test]

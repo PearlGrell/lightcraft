@@ -262,6 +262,26 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeExpor
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativePresetThumbnail<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    preset: JString<'l>,
+    long_edge: jint,
+) -> jintArray {
+    let r =
+        rust_string(&mut env, &preset).and_then(|preset| guarded(|| session(handle)?.preset_thumbnail(photo_id(photo)?, &preset, edge(long_edge)?)));
+    match r {
+        Ok(f) => int_array(&mut env, &frame_ints(&f)),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 fn floats(env: &mut JNIEnv, a: &JFloatArray) -> Result<Vec<f32>, String> {
     let len = env.get_array_length(a).map_err(|e| e.to_string())?;
     let len = usize::try_from(len).map_err(|e| e.to_string())?;

@@ -12,7 +12,7 @@ import android.util.Size
 import androidx.core.content.ContextCompat
 
 /** One image of the phone's gallery (MediaStore). [path] is its file, when the system gives one. */
-data class GalleryImage(val id: Long, val uri: Uri, val path: String?, val name: String, val mime: String)
+data class GalleryImage(val id: Long, val uri: Uri, val path: String?, val name: String, val mime: String, val taken: Long = 0L)
 
 /** The phone's gallery: every image MediaStore knows, newest first. */
 object Gallery {
@@ -31,7 +31,7 @@ object Gallery {
     fun images(context: Context): List<GalleryImage> {
         val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         @Suppress("DEPRECATION") // DATA is still the file path apps with media access may read
-        val columns = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATA, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.MIME_TYPE)
+        val columns = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATA, MediaStore.Images.Media.DISPLAY_NAME, MediaStore.Images.Media.MIME_TYPE, MediaStore.Images.Media.DATE_TAKEN, MediaStore.Images.Media.DATE_ADDED)
         val order = "${MediaStore.Images.Media.DATE_TAKEN} DESC, ${MediaStore.Images.Media.DATE_ADDED} DESC"
         val out = ArrayList<GalleryImage>()
         context.contentResolver.query(collection, columns, null, null, order)?.use { c ->
@@ -39,6 +39,8 @@ object Gallery {
             val data = c.getColumnIndexOrThrow(columns[1])
             val name = c.getColumnIndexOrThrow(columns[2])
             val mime = c.getColumnIndexOrThrow(columns[3])
+            val taken = c.getColumnIndexOrThrow(columns[4])
+            val added = c.getColumnIndexOrThrow(columns[5])
             while (c.moveToNext()) {
                 val mediaId = c.getLong(id)
                 out += GalleryImage(
@@ -47,6 +49,8 @@ object Gallery {
                     path = c.getString(data)?.takeIf { it.isNotEmpty() },
                     name = c.getString(name) ?: "photo",
                     mime = c.getString(mime) ?: "image/*",
+                    // DATE_TAKEN is milliseconds and may be missing; DATE_ADDED is seconds
+                    taken = c.getLong(taken).takeIf { it > 0 } ?: (c.getLong(added) * 1000),
                 )
             }
         }

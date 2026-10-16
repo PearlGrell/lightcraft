@@ -2,6 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    // JVM screenshots of the editor chrome (`./gradlew :app:recordPaparazziRelease`), no device needed
+    alias(libs.plugins.paparazzi)
 }
 
 // The engine is Rust: `cargo ndk` builds `apps/lightcraft-android` (the JNI crate) into
@@ -71,6 +73,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons)
     implementation(libs.kotlinx.coroutines.android)
+    // on-device subject segmentation (opt-in AI masks and background removal), via Play services
+    implementation(libs.mlkit.subject.segmentation)
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)
 }

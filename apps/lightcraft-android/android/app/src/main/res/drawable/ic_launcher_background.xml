@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Original work (LightCraft): a dark gradient field. -->
+<!-- Original work (LightCraft): the brand mark's espresso tile. See ic_brand_mark.xml to rebrand. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android">
-    <gradient android:angle="315" android:startColor="#FF1E2A38" android:endColor="#FF111820" />
+    <gradient android:angle="270" android:startColor="#FF2C1D13" android:endColor="#FF1C120B" />
 </shape>

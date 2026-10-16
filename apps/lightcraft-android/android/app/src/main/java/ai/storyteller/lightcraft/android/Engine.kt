@@ -3,6 +3,16 @@ package ai.storyteller.lightcraft.android
 import android.graphics.Bitmap
 import org.json.JSONObject
 
+/** Magic eraser settings (see `lightcraft_bgremove::EraseOptions`). */
+data class EraseSettings(
+    val tolerance: Float = 32f,
+    val contiguous: Boolean = true,
+    val sample: Int = 1,
+    val antiAlias: Boolean = true,
+    val feather: Float = 0f,
+    val opacity: Float = 100f,
+)
+
 /** An engine command failed; [kind] is the engine's error kind (`BadParams`, `UnknownCommand`…). */
 class EngineException(val kind: String, message: String) : Exception(message)
 
@@ -45,6 +55,26 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
     /** Export [photo] into [dir] with the export dialog's [options]; returns the file written. */
     fun export(photo: Long, options: JSONObject, dir: String): String = nativeExport(live(), photo, options.toString(), dir)
 
+    /** A mask on the active photo from on-device segmentation: [side]×[side] probabilities over the uncropped photo. */
+    fun addSegMask(name: String, side: Int, probs: FloatArray, invert: Boolean) {
+        val answer = JSONObject(nativeAddSegMask(live(), name, side, probs, invert))
+        if (!answer.optBoolean("ok")) throw EngineException(answer.optString("kind", "Other"), answer.optString("error", "mask failed"))
+    }
+
+    /** [photo] as preset [preset] would leave it, for the presets strip (nothing is applied). */
+    fun presetThumbnail(photo: Long, preset: String, longEdge: Int): Bitmap = bitmap(nativePresetThumbnail(live(), photo, preset, longEdge))
+
+    /** Background removal: render [photo] at [longEdge]; returns its size. */
+    fun cutoutBegin(photo: Long, longEdge: Int): Pair<Int, Int> = nativeCutoutBegin(live(), photo, longEdge).let { it[0] to it[1] }
+    fun cutoutMatte(side: Int, probs: FloatArray, invert: Boolean) = nativeCutoutMatte(live(), side, probs, invert)
+    fun cutoutErase(x: Float, y: Float, o: EraseSettings): Int =
+        nativeCutoutErase(live(), x, y, o.tolerance, o.contiguous, o.sample, o.antiAlias, o.feather, o.opacity)
+    fun cutoutUndo(): Boolean = nativeCutoutUndo(live())
+    fun cutoutReset() = nativeCutoutReset(live())
+    fun cutoutFrame(): Bitmap = bitmap(nativeCutoutFrame(live()))
+    fun cutoutExport(dir: String, name: String, refine: Boolean): String = nativeCutoutExport(live(), dir, name, refine)
+    fun cutoutEnd() = nativeCutoutEnd(live())
+
     override fun close() {
         if (handle != 0L) nativeRelease(handle)
         handle = 0L
@@ -80,6 +110,16 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativePhotos(handle: Long): LongArray
         @JvmStatic private external fun nativeRender(handle: Long, photo: Long, maxW: Int, maxH: Int, before: Boolean, draft: Boolean): IntArray
         @JvmStatic private external fun nativeThumbnail(handle: Long, photo: Long, longEdge: Int): IntArray
+        @JvmStatic private external fun nativePresetThumbnail(handle: Long, photo: Long, preset: String, longEdge: Int): IntArray
+        @JvmStatic private external fun nativeAddSegMask(handle: Long, name: String, side: Int, probs: FloatArray, invert: Boolean): String
+        @JvmStatic private external fun nativeCutoutBegin(handle: Long, photo: Long, longEdge: Int): IntArray
+        @JvmStatic private external fun nativeCutoutMatte(handle: Long, side: Int, probs: FloatArray, invert: Boolean)
+        @JvmStatic private external fun nativeCutoutErase(handle: Long, x: Float, y: Float, tolerance: Float, contiguous: Boolean, sample: Int, antiAlias: Boolean, feather: Float, opacity: Float): Int
+        @JvmStatic private external fun nativeCutoutUndo(handle: Long): Boolean
+        @JvmStatic private external fun nativeCutoutReset(handle: Long)
+        @JvmStatic private external fun nativeCutoutFrame(handle: Long): IntArray
+        @JvmStatic private external fun nativeCutoutExport(handle: Long, dir: String, name: String, refine: Boolean): String
+        @JvmStatic private external fun nativeCutoutEnd(handle: Long)
         @JvmStatic private external fun nativeExport(handle: Long, photo: Long, options: String, dir: String): String
     }
 }

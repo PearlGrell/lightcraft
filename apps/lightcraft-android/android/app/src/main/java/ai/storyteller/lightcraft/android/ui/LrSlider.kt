@@ -15,69 +15,77 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import ai.storyteller.lightcraft.android.Control
 import java.util.Locale
 import kotlin.math.abs
 
 /**
- * A develop slider in the phone editor's style: label and value on one line, a thin track under
- * them filled from the default (the centre for ±ranges) to the value, and a small round thumb.
+ * A develop slider: label left and value right on one line, a thin grey track under them, a white
+ * fill from the default (the centre for ±ranges) to the value, and a round thumb with a white ring.
  * Dragging anywhere on the row scrubs relative to where the finger started, so the value never jumps
- * under the finger; the value snaps to the default with a haptic tick; double-tap resets.
+ * under the finger; it snaps to the default with a haptic tick; double-tap resets.
  */
 @Composable
-fun LrSlider(c: Control, onChange: (String, Float) -> Unit, onDone: () -> Unit, onReset: (String) -> Unit, modifier: Modifier = Modifier) {
+fun LrSlider(
+    label: String,
+    value: Float,
+    min: Float,
+    max: Float,
+    default: Float,
+    decimals: Int,
+    unit: String = "",
+    onChange: (Float) -> Unit,
+    onDone: () -> Unit,
+    onReset: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val haptics = LocalHapticFeedback.current
-    val current by rememberUpdatedState(c)
-    val range = (c.max - c.min).coerceAtLeast(1e-6f)
-    val changed = abs(c.value - c.default) > range * 1e-4f
+    val current by rememberUpdatedState(value)
+    val change by rememberUpdatedState(onChange)
+    val range = (max - min).coerceAtLeast(1e-6f)
     Column(
         modifier
             .fillMaxWidth()
-            .pointerInput(c.id) { detectTapGestures(onDoubleTap = { onReset(current.id) }) }
-            .pointerInput(c.id) {
-                var value = 0f
+            .pointerInput(label) { detectTapGestures(onDoubleTap = { onReset() }) }
+            .pointerInput(label, min, max, default) {
+                var v = 0f
                 detectHorizontalDragGestures(
-                    onDragStart = { value = current.value },
+                    onDragStart = { v = current },
                     onDragEnd = onDone,
                     onDragCancel = onDone,
-                ) { change, dx ->
-                    change.consume()
-                    val c0 = current
-                    val r = (c0.max - c0.min).coerceAtLeast(1e-6f)
-                    value = (value + dx / size.width * r).coerceIn(c0.min, c0.max)
-                    val snapped = if (abs(value - c0.default) < r * 0.012f) c0.default else value
-                    if (snapped == c0.default && c0.value != c0.default) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    if (snapped != c0.value) onChange(c0.id, snapped)
+                ) { c, dx ->
+                    c.consume()
+                    v = (v + dx / size.width * range).coerceIn(min, max)
+                    val snapped = if (abs(v - default) < range * 0.012f) default else v
+                    if (snapped == default && current != default) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    if (snapped != current) change(snapped)
                 }
             }
-            .padding(vertical = 7.dp),
+            .padding(vertical = 6.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(c.label, fontSize = 13.sp, color = if (changed) Lc.text else Lc.label, modifier = Modifier.weight(1f))
-            Text(format(c), fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (changed) Lc.text else Lc.label)
+            Text(label, fontSize = 15.sp, color = Lc.text, modifier = Modifier.weight(1f))
+            Text(format(value, min, decimals, unit), fontSize = 15.sp, color = Lc.text)
         }
-        Canvas(Modifier.fillMaxWidth().height(18.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(26.dp)) {
             val y = size.height / 2f
-            val x = { v: Float -> (v - c.min) / range * size.width }
-            drawLine(Lc.track, Offset(0f, y), Offset(size.width, y), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-            val from = x(c.default.coerceIn(c.min, c.max))
-            val to = x(c.value.coerceIn(c.min, c.max))
-            if (changed) drawLine(Lc.text, Offset(from, y), Offset(to, y), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-            if (c.min < c.default && c.default < c.max) drawCircle(Lc.muted, 2.dp.toPx(), Offset(from, y))
-            drawCircle(Lc.text, 7.dp.toPx(), Offset(to, y))
+            val x = { t: Float -> (t.coerceIn(min, max) - min) / range * size.width }
+            drawLine(Lc.track, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.5.dp.toPx())
+            val from = x(default)
+            val to = x(value)
+            drawLine(Lc.text, Offset(from, y), Offset(to, y), strokeWidth = 2.5.dp.toPx())
+            drawCircle(Lc.thumb, 10.dp.toPx(), Offset(to, y))
+            drawCircle(Lc.text, 10.dp.toPx(), Offset(to, y), style = Stroke(1.8.dp.toPx()))
         }
     }
 }
 
-private fun format(c: Control): String {
-    val text = String.format(Locale.ROOT, "%.${c.decimals}f", c.value)
-    return if (c.min < 0 && c.value > 0) "+$text" else text
+private fun format(v: Float, min: Float, decimals: Int, unit: String): String {
+    val text = String.format(Locale.ROOT, "%.${decimals}f", v)
+    return (if (min < 0 && v > 0 && unit != "EV") "+$text" else text) + unit
 }

@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -53,6 +54,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -78,6 +80,7 @@ fun LibraryScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
     val ready by vm.ready.collectAsStateWithLifecycle()
     val version by vm.thumbVersion.collectAsStateWithLifecycle()
     var columns by rememberSaveable { mutableIntStateOf(4) }
+    val grouped = remember(photos) { days(photos) }
     var asked by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
     val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -89,20 +92,21 @@ fun LibraryScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
         if (!access && !asked) request.launch(Gallery.permissions)
     }
 
-    Box(Modifier.fillMaxSize().background(Lc.chrome)) {
+    Box(Modifier.fillMaxSize().background(Color(0xFF121212))) {
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
             Row(
                 Modifier.fillMaxWidth().height(56.dp).padding(start = 16.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Image(painterResource(R.drawable.ic_brand_mark), contentDescription = "LightCraft", modifier = Modifier.size(28.dp))
-                Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                    Text("All Photos", style = MaterialTheme.typography.titleMedium)
-                    Text(if (access) "${photos.size} photos" else "Gallery access needed", style = MaterialTheme.typography.bodySmall)
-                }
+                Image(painterResource(R.drawable.ic_brand_mark), contentDescription = null, modifier = Modifier.size(30.dp))
+                Text("LightCraft", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f).padding(start = 10.dp))
                 IconButton(onClick = { columns = if (columns >= MAX_COLUMNS) MIN_COLUMNS else columns + 1 }) {
                     Icon(Icons.Outlined.GridView, contentDescription = "Grid size", tint = Lc.label)
                 }
+            }
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 10.dp), verticalAlignment = Alignment.Bottom) {
+                Text("All Photos", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+                Text(if (access) "${photos.size} photos" else "", style = MaterialTheme.typography.bodySmall)
             }
             if (!ready) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp), color = Lc.accent, trackColor = Lc.chrome)
             when {
@@ -119,13 +123,18 @@ fun LibraryScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
                 photos.isEmpty() -> Centered("No photos on this device yet", "Photos you take or save appear here.")
                 else -> LazyVerticalGrid(
                     columns = GridCells.Fixed(columns),
-                    horizontalArrangement = Arrangement.spacedBy(1.5.dp),
-                    verticalArrangement = Arrangement.spacedBy(1.5.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
                     contentPadding = PaddingValues(bottom = 24.dp),
                     modifier = Modifier.fillMaxSize().navigationBarsPadding().pinchColumns(columns) { columns = it },
                 ) {
-                    items(photos, key = { it.id }) { image ->
-                        Thumbnail(vm, image, columns, version) { vm.open(image) }
+                    for ((day, images) in grouped) {
+                        item(key = "day-$day", span = { GridItemSpan(maxLineSpan) }) {
+                            Text(day, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 8.dp))
+                        }
+                        items(images, key = { it.id }) { image ->
+                            Thumbnail(vm, image, columns, version) { vm.open(image) }
+                        }
                     }
                 }
             }
@@ -169,6 +178,24 @@ private fun Centered(title: String, body: String) {
         Text(title, style = MaterialTheme.typography.titleMedium)
         Text(body, style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+/** The photos grouped by the day they were taken, newest first: "Today", "Yesterday", "Wed, Oct 14, 2026". */
+private fun days(photos: List<GalleryImage>): List<Pair<String, List<GalleryImage>>> {
+    val zone = java.time.ZoneId.systemDefault()
+    val today = java.time.LocalDate.now(zone)
+    val format = java.time.format.DateTimeFormatter.ofPattern("EEE, MMM d, yyyy")
+    return photos.groupBy { java.time.Instant.ofEpochMilli(it.taken).atZone(zone).toLocalDate() }
+        .toList()
+        .sortedByDescending { it.first }
+        .map { (date, images) ->
+            val label = when (date) {
+                today -> "Today"
+                today.minusDays(1) -> "Yesterday"
+                else -> date.format(format)
+            }
+            label to images
+        }
 }
 
 /** Two-finger pinch changes the column count; one finger still scrolls the grid. */

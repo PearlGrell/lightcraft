@@ -15,28 +15,36 @@ Every edit is an engine command by id with JSON parameters (`develop.set`, `deve
 every engine feature without a second implementation. Pixels come back as ARGB ints for a `Bitmap`;
 exports go through the engine's one encoder (`lightcraft_engine::export`).
 
-## What works (milestone 1)
+## What works
 
 - **Library = the phone's gallery**: after the media permission (`READ_MEDIA_IMAGES`, or storage
   before Android 13; a clear prompt, and Settings when it was denied for good) the grid shows every
-  image MediaStore has, newest first, with the system thumbnails. Opening one imports it in place
-  (`Mobile::photo_for_path`): the original stays where it is and the edits live in the app's catalog.
-  No demo or generated pictures. Pinch or the grid button changes density.
-- **Editor** (phone-editor layout): back, undo, redo, compare and share in a thin top bar; the photo
-  edge to edge on black (pinch or double-tap to zoom, press and hold for the original); the open
-  tool's panel above a scrolling tool rail.
-- **Tools**: Presets (`presets.list` / `preset.apply`), Auto (`develop.auto`), Light (+ Curve),
-  Color (+ Mix, Grading, B&W Mix, Calibration), Effects (+ Vignette, Grain), Detail (Sharpening,
-  Noise), Optics (Lens, Chromatic), Geometry (Upright) and Crop (aspect ratios, rotate, flip,
-  straighten). Every slider comes from the engine's control list (`develop.controls`), grouped by
-  id prefix in `Tools.kt`, so a new engine control shows up without app changes. Sliders scrub
-  relative to the finger, snap to their default with a haptic tick, reset on double-tap; one drag is
-  one undo step; each sub-panel has Reset.
+  image MediaStore has, newest first, in day sections (Today, Yesterday, dates). Opening one imports
+  it in place (`Mobile::photo_for_path`): the original stays where it is and the edits live in the
+  app's catalog. No demo or generated pictures. Pinch or the grid button changes density.
+- **Editor** (phone-editor layout): the photo edge to edge (pinch or double-tap to zoom, press and
+  hold for the original, Compare for a draggable before/after split); back, undo, redo, compare and
+  share float over it. At the bottom, the open tool's panel, a tool row, and a six-tab bar:
+  **Quick** (Auto, Pop, Sky, B&W, Remove BG, Reset), **Presets** (live thumbnail strip rendered with
+  `Mobile::preset_thumbnail`, which never applies the preset), **Crop** (aspect ratios, rotate,
+  flip, straighten), **Edit** (Auto | Light, Color, Curve, Effects, Detail, Optics, Geometry),
+  **Masking** and **Remove**. Every slider comes from the engine's control list
+  (`develop.controls`), grouped by id prefix in `Tools.kt`. Sliders scrub relative to the finger,
+  snap to their default with a haptic tick, reset on double-tap; one drag is one undo step.
+- **Point tone curve** (`ui/CurveEditor.kt`): RGB, Red, Green and Blue; tap to add a point, drag to
+  move it, drag an inner point off the grid to remove it (`develop.curve`).
+- **AI masks** (Masking tab): Subject and Background come from ML Kit Subject Segmentation
+  (`Segmenter.kt`, on-device; Play services downloads the model on first use) and enter the engine
+  as segmentation masks (`Mobile::add_seg_mask` → `mask.add`); Sky is the engine's own sky mask;
+  Linear and Radial gradients too. Each mask has local sliders, invert and delete.
+- **Remove**: one-tap background removal (ML Kit matte) and a Magic Eraser (tap to erase similar
+  colour; tolerance in CIELAB ΔE, contiguous, sample size, anti-alias, feather, opacity), with undo,
+  reset and transparent PNG export with edge decontamination. The pixel work is the pure-Rust
+  `lightcraft-bgremove` crate.
 - **Export / share**: JPEG through the engine's exporter, handed to the Android share sheet.
-- Masking and Remove come with milestones 3 and 4.
 
 **Brand mark**: `res/drawable/ic_brand_mark.xml` (library header) and `ic_launcher_*.xml` (launcher)
-are original artwork. Replace those files, keeping their names, to rebrand. Adobe's logos and other
+are original artwork (an amber "Lc" monogram on an espresso tile). Replace those files, keeping their names, to rebrand. Adobe's logos and other
 Adobe assets may not be used (see `CLAUDE.md`).
 
 ## Build
@@ -57,6 +65,8 @@ Gradle runs `cargo ndk` before every build (the `cargoNdk` task), so Rust change
 The release APK is minified and signed with the debug key so it installs directly; a store build
 supplies its own signing config. `smoke-test.sh` installs an APK on a connected device or emulator,
 opens the editor and saves screenshots; CI (`.github/workflows/android.yml`) runs it on an emulator.
+`./gradlew :app:recordPaparazziRelease` renders the editor chrome on the JVM (no device) into
+`app/src/test/snapshots/` (gitignored) for a quick look at layout changes.
 
 Licences: the Compose, AndroidX and Material icon libraries are Apache-2.0 dependencies fetched by
-Gradle; the launcher icon is original work (`assets/ATTRIBUTION.md`).
+Gradle, as is ML Kit subject segmentation (Google Play services); the launcher icon is original work (`assets/ATTRIBUTION.md`).

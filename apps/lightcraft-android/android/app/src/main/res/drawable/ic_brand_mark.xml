@@ -1,15 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The app's brand mark (original work, LightCraft): a rounded tile with a light ring and a horizon.
-  Shown in the library header; the launcher icon draws the same shapes. To rebrand, replace this
-  file and res/drawable/ic_launcher_*.xml (keep the names) and add the new art to assets/ATTRIBUTION.md.
+  LightCraft's brand mark (original work): an espresso rounded tile with a geometric, rounded "Lc"
+  monogram drawn as strokes in amber. Shown in the library header; the launcher icon draws the same
+  monogram. To rebrand, replace this file and res/drawable/ic_launcher_*.xml (keep the names) and
+  update assets/ATTRIBUTION.md. Not derived from any Adobe artwork, typeface or colours.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="32dp"
     android:height="32dp"
     android:viewportWidth="32"
     android:viewportHeight="32">
-    <path android:fillColor="#FF1E2A38" android:pathData="M7,0h18a7,7 0,0 1,7 7v18a7,7 0,0 1,-7 7h-18a7,7 0,0 1,-7 -7v-18a7,7 0,0 1,7 -7z" />
-    <path android:fillColor="#00000000" android:strokeColor="#FFF2B33D" android:strokeWidth="2.5" android:pathData="M16,8.5a6,6 0,1 1,0 12a6,6 0,1 1,0 -12z" />
-    <path android:fillColor="#FF5DA9E9" android:pathData="M7,23h18v2.2h-18z" />
+    <path android:fillColor="#FF24170F" android:pathData="M8,0h16a8,8 0,0 1,8 8v16a8,8 0,0 1,-8 8h-16a8,8 0,0 1,-8 -8v-16a8,8 0,0 1,8 -8z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFB547"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="3"
+        android:pathData="M8.5,8.5V22.5H14.5" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFB547"
+        android:strokeLineCap="round"
+        android:strokeWidth="3"
+        android:pathData="M25,15.8A4.3,4.3 0,1 0,25 21.2" />
 </vector>
