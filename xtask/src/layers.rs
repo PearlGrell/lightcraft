@@ -62,11 +62,13 @@ pub const TABLE: &[(&str, Class)] = &[
     ("engine", Class::Layer(4)),
     ("ui-egui", Class::Layer(5)),
     ("mcp", Class::Layer(5)),
+    ("mobile", Class::Layer(5)),
     ("testkit", Class::Testkit),
     // L6 apps and tooling
     ("lightcraft", Class::Exempt),
     ("cli", Class::Exempt),
     ("web", Class::Exempt),
+    ("android", Class::Exempt),
     ("xtask", Class::Exempt),
 ];
 

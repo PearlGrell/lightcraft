@@ -1,0 +1,16 @@
+[package]
+name = "lightcraft-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "LightCraft for Android: JNI glue between the Kotlin / Jetpack Compose app (android/) and lightcraft-mobile"
+
+[lib]
+name = "lightcraft_android"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lightcraft-mobile = { workspace = true }
+# pure-Rust JNI bindings (MIT OR Apache-2.0); the JVM is the phone's, nothing native is built
+jni = { version = "0.21.1", default-features = false }

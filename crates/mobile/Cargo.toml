@@ -1,0 +1,15 @@
+[package]
+name = "lightcraft-mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LightCraft for phones (L5): a thread-safe handle over the engine for the Android (and later iOS) native UIs"
+
+[lints]
+workspace = true
+
+[dependencies]
+lightcraft-engine = { workspace = true }
+lightcraft-raster = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
