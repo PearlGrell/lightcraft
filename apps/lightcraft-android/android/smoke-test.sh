@@ -7,9 +7,15 @@ out=${2:-screenshots}
 pkg=ai.storyteller.lightcraft.android
 mkdir -p "$out"
 adb install -r "$apk"
+# the library is the gallery: put one picture in it (a screenshot of the home screen, nothing bundled)
+adb shell mkdir -p /sdcard/Pictures
+adb shell screencap -p /sdcard/Pictures/lightcraft-smoke.png
+adb shell content call --method scan_volume --uri content://media --arg external_primary > /dev/null 2>&1 \
+  || adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/lightcraft-smoke.png > /dev/null
+adb shell pm grant "$pkg" android.permission.READ_MEDIA_IMAGES 2> /dev/null || adb shell pm grant "$pkg" android.permission.READ_EXTERNAL_STORAGE
 adb logcat -c
 adb shell am start -W -n "$pkg/.MainActivity"
-sleep 20 # first start seeds the demo library
+sleep 15
 adb exec-out screencap -p > "$out/1-library.png"
 # open the first photo of the grid (top-left cell), then the Light panel from the tool rail
 read -r w h < <(adb shell wm size | sed -E 's/.* ([0-9]+)x([0-9]+).*/\1 \2/')

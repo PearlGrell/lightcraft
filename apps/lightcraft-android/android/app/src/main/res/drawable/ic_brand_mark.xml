@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The app's brand mark (original work, LightCraft): a rounded tile with a light ring and a horizon.
+  Shown in the library header; the launcher icon draws the same shapes. To rebrand, replace this
+  file and res/drawable/ic_launcher_*.xml (keep the names) and add the new art to assets/ATTRIBUTION.md.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="32dp"
+    android:height="32dp"
+    android:viewportWidth="32"
+    android:viewportHeight="32">
+    <path android:fillColor="#FF1E2A38" android:pathData="M7,0h18a7,7 0,0 1,7 7v18a7,7 0,0 1,-7 7h-18a7,7 0,0 1,-7 -7v-18a7,7 0,0 1,7 -7z" />
+    <path android:fillColor="#00000000" android:strokeColor="#FFF2B33D" android:strokeWidth="2.5" android:pathData="M16,8.5a6,6 0,1 1,0 12a6,6 0,1 1,0 -12z" />
+    <path android:fillColor="#FF5DA9E9" android:pathData="M7,23h18v2.2h-18z" />
+</vector>

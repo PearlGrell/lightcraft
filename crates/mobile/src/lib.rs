@@ -13,7 +13,7 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use lightcraft_engine::catalog::PhotoId;
+use lightcraft_engine::catalog::{PhotoId, Source};
 use lightcraft_engine::export::{ExportOptions, export_photo};
 use lightcraft_engine::{EngineError, RenderJob, Session};
 use serde_json::{Value, json};
@@ -43,12 +43,14 @@ impl Default for Mobile {
 impl Mobile {
     /// An empty in-memory session (open a library with [`Mobile::open_library`]).
     pub fn new() -> Mobile {
-        Mobile { session: Mutex::new(Session::new()) }
+        // `with_fs` installs the file decoders (JPEG, PNG, HEIC, raws…): without them every
+        // imported photo fails to render with "no decoder available"
+        Mobile { session: Mutex::new(Session::new().with_fs()) }
     }
 
     /// A session with the procedural demo library (first run, screenshots, tests).
     pub fn demo() -> Mobile {
-        Mobile { session: Mutex::new(Session::with_demo()) }
+        Mobile { session: Mutex::new(Session::with_demo().with_fs()) }
     }
 
     fn lock(&self) -> MutexGuard<'_, Session> {
@@ -78,6 +80,18 @@ impl Mobile {
             Ok(result) => json!({"ok": true, "result": result}).to_string(),
             Err(e) => engine_failure(&e),
         }
+    }
+
+    /// The library photo for the file at `path` (a gallery image), importing it in place the first
+    /// time: the phone's gallery is the library, the engine keeps the edits.
+    pub fn photo_for_path(&self, path: &str) -> Result<u64, String> {
+        let find = |s: &Session| s.catalog.photos().find(|p| matches!(&p.source, Source::File { path: q } if q == path)).map(|p| p.id.0);
+        if let Some(id) = find(&self.lock()) {
+            return Ok(id);
+        }
+        let mut s = self.lock();
+        s.execute("library.import", &json!({"paths": [path], "mode": "add"})).map_err(|e| e.to_string())?;
+        find(&s).ok_or_else(|| format!("{path} could not be imported"))
     }
 
     /// The ids of the photos the library view shows, in its order.
@@ -197,6 +211,40 @@ mod tests {
         assert!(path.starts_with(dir.to_str().unwrap()) && bytes.starts_with(&[0xff, 0xd8]), "{path}");
         assert!(m.export(u64::MAX, "", dir.to_str().unwrap()).is_err());
         assert!(m.export(m.photos()[0], "{bad", dir.to_str().unwrap()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_imported_jpeg_renders() {
+        let dir = std::env::temp_dir().join(format!("lightcraft-mobile-jpeg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // a real JPEG on disk: the demo photo exported through the engine's encoder
+        let demo = Mobile::demo();
+        let jpeg = demo.export(demo.photos()[0], r#"{"format":"jpeg","width":200}"#, dir.join("in").to_str().unwrap()).unwrap();
+        let m = Mobile::new();
+        m.open_library(dir.join("lib").to_str().unwrap(), false).unwrap();
+        let r = parse(&m.execute("library.import", &json!({"paths": [jpeg]}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let id = *m.photos().last().unwrap();
+        let f = m.render(id, 160, 160, false, false).unwrap();
+        assert!(f.width.max(f.height) == 160, "{}x{}", f.width, f.height);
+        assert!(m.thumbnail(id, 64).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_gallery_path_maps_to_one_photo() {
+        let dir = std::env::temp_dir().join(format!("lightcraft-mobile-gallery-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let demo = Mobile::demo();
+        let jpeg = demo.export(demo.photos()[0], r#"{"format":"jpeg","width":120}"#, dir.join("dcim").to_str().unwrap()).unwrap();
+        let m = Mobile::new();
+        m.open_library(dir.join("lib").to_str().unwrap(), false).unwrap();
+        let id = m.photo_for_path(&jpeg).unwrap();
+        assert_eq!(m.photo_for_path(&jpeg).unwrap(), id, "the second call finds the imported photo");
+        assert_eq!(m.photos(), vec![id]);
+        assert!(m.render(id, 64, 64, false, false).is_ok());
+        assert!(m.photo_for_path(dir.join("missing.jpg").to_str().unwrap()).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

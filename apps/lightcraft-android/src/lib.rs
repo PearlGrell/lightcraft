@@ -172,6 +172,25 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativePhoto
     }
 }
 
+/// The library photo for a gallery file, imported in place the first time; throws
+/// `IllegalStateException` when the file can't be read.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativePhotoForPath<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    path: JString<'l>,
+) -> jlong {
+    let r = rust_string(&mut env, &path).and_then(|path| guarded(|| session(handle)?.photo_for_path(&path)));
+    match r.and_then(|id| i64::try_from(id).map_err(|e| e.to_string())) {
+        Ok(id) => id,
+        Err(e) => {
+            throw(&mut env, &e);
+            0
+        }
+    }
+}
+
 fn photo_id(photo: jlong) -> Result<u64, String> {
     u64::try_from(photo).map_err(|_| format!("no photo {photo}"))
 }

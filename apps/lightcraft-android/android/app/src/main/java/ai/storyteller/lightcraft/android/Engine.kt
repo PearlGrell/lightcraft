@@ -29,6 +29,9 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         return answer.opt("result")
     }
 
+    /** The library photo for the gallery file at [path], imported in place the first time. */
+    fun photoForPath(path: String): Long = nativePhotoForPath(live(), path)
+
     /** The photo ids the library shows, in its order. */
     fun photos(): LongArray = nativePhotos(live())
 
@@ -73,6 +76,7 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeRelease(handle: Long)
         @JvmStatic private external fun nativeOpenLibrary(handle: Long, dir: String, seedDemo: Boolean): String?
         @JvmStatic private external fun nativeExecute(handle: Long, id: String, params: String): String
+        @JvmStatic private external fun nativePhotoForPath(handle: Long, path: String): Long
         @JvmStatic private external fun nativePhotos(handle: Long): LongArray
         @JvmStatic private external fun nativeRender(handle: Long, photo: Long, maxW: Int, maxH: Int, before: Boolean, draft: Boolean): IntArray
         @JvmStatic private external fun nativeThumbnail(handle: Long, photo: Long, longEdge: Int): IntArray

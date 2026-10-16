@@ -2,8 +2,6 @@ package ai.storyteller.lightcraft.android
 
 import android.app.Application
 import android.graphics.Bitmap
-import android.net.Uri
-import android.provider.OpenableColumns
 import android.util.Log
 import android.util.LruCache
 import androidx.lifecycle.AndroidViewModel
@@ -22,6 +20,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** A develop preset (`presets.list`). */
+data class Preset(val id: String, val name: String, val group: String)
+
 /** What the screens show; every change goes through engine commands. */
 class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     private val tag = "LightCraft"
@@ -33,11 +34,23 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     private val _ready = MutableStateFlow(false)
     val ready: StateFlow<Boolean> = _ready.asStateFlow()
 
-    private val _photos = MutableStateFlow<List<Long>>(emptyList())
-    val photos: StateFlow<List<Long>> = _photos.asStateFlow()
+    private val _photos = MutableStateFlow<List<GalleryImage>>(emptyList())
+    val photos: StateFlow<List<GalleryImage>> = _photos.asStateFlow()
+
+    private val _access = MutableStateFlow(Gallery.hasAccess(app))
+    /** Whether the app may read the gallery; the library asks for it when not. */
+    val access: StateFlow<Boolean> = _access.asStateFlow()
+
+    /** Gallery image → its library photo, for the images opened in the editor. */
+    private val opened = HashMap<Long, Long>()
 
     private val _editing = MutableStateFlow<Long?>(null)
     val editing: StateFlow<Long?> = _editing.asStateFlow()
+
+    private val _opening = MutableStateFlow<GalleryImage?>(null)
+    /** The gallery image being opened (the editor shows its thumbnail meanwhile). */
+    val opening: StateFlow<GalleryImage?> = _opening.asStateFlow()
+    private var editingImage: GalleryImage? = null
 
     private val _preview = MutableStateFlow<Bitmap?>(null)
     val preview: StateFlow<Bitmap?> = _preview.asStateFlow()
@@ -54,6 +67,9 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     /** Bumped when an edited photo's thumbnail is stale, so grid cells reload. */
     private val _thumbVersion = MutableStateFlow(0)
     val thumbVersion: StateFlow<Int> = _thumbVersion.asStateFlow()
+
+    private val _presets = MutableStateFlow<List<Preset>>(emptyList())
+    val presets: StateFlow<List<Preset>> = _presets.asStateFlow()
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
@@ -76,9 +92,9 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(commands) {
             try {
                 val e = Engine.create()
-                e.openLibrary(File(app.filesDir, "library").absolutePath, seedDemo = true)
+                // the edits live here; the photos stay where they are in the gallery
+                e.openLibrary(File(app.filesDir, "catalog").absolutePath, seedDemo = false)
                 engine = e
-                _photos.value = e.photos().toList()
                 _ready.value = true
             } catch (t: Throwable) {
                 Log.e(tag, "engine start failed", t)
@@ -88,81 +104,91 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.Default) {
             for (draft in renders) renderNow(draft)
         }
+        refreshGallery()
     }
 
     // ---- library -------------------------------------------------------------------------------
 
-    fun cachedThumbnail(photo: Long): Bitmap? = thumbs.get(photo)
-
-    suspend fun thumbnail(photo: Long, edge: Int): Bitmap? = withContext(Dispatchers.Default) {
-        thumbs.get(photo) ?: runCatching { engine?.thumbnail(photo, edge) }
-            .onFailure { Log.w(tag, "thumbnail $photo", it) }
-            .getOrNull()
-            ?.also { thumbs.put(photo, it) }
-    }
-
-    /** Copy the picked photos into the app's library folder and import them. */
-    fun import(uris: List<Uri>) {
-        if (uris.isEmpty()) return
-        viewModelScope.launch(commands) {
-            val e = engine ?: return@launch
-            _busy.value = true
-            try {
-                val dir = File(getApplication<Application>().filesDir, "library/originals").apply { mkdirs() }
-                val paths = JSONArray()
-                for (uri in uris) {
-                    runCatching { copyIn(uri, dir) }
-                        .onSuccess { paths.put(it.absolutePath) }
-                        .onFailure { messages.trySend("Could not read a photo: ${it.message}") }
-                }
-                if (paths.length() > 0) {
-                    e.execute("library.import", JSONObject().put("paths", paths))
-                    _photos.value = e.photos().toList()
-                    messages.trySend("Imported ${paths.length()} photo${if (paths.length() == 1) "" else "s"}")
-                }
-            } catch (t: Throwable) {
-                messages.trySend("Import failed: ${t.message}")
-            } finally {
-                _busy.value = false
-            }
+    /** Re-read the gallery (after the permission answer, and whenever the app comes back). */
+    fun refreshGallery() {
+        val app = getApplication<Application>()
+        _access.value = Gallery.hasAccess(app)
+        if (!_access.value) {
+            _photos.value = emptyList()
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { Gallery.images(app) }
+                .onSuccess { _photos.value = it }
+                .onFailure { messages.trySend("Could not read the gallery: ${it.message}") }
         }
     }
 
-    private fun copyIn(uri: Uri, dir: File): File {
-        val resolver = getApplication<Application>().contentResolver
-        val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
-            if (c.moveToFirst()) c.getString(0) else null
-        } ?: "photo.jpg"
-        val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").ifEmpty { "photo.jpg" }
-        var out = File(dir, safe)
-        var n = 1
-        while (out.exists()) out = File(dir, "${safe.substringBeforeLast('.')}-${n++}.${safe.substringAfterLast('.', "jpg")}")
-        resolver.openInputStream(uri)?.use { input -> out.outputStream().use { input.copyTo(it) } }
-            ?: throw IllegalStateException("$name is not readable")
-        return out
+    fun cachedThumbnail(image: GalleryImage): Bitmap? = thumbs.get(image.id)
+
+    /** The engine's thumbnail for photos with edits, the system's for the rest. */
+    suspend fun thumbnail(image: GalleryImage, edge: Int): Bitmap? = withContext(Dispatchers.IO) {
+        thumbs.get(image.id) ?: run {
+            val photo = opened[image.id]
+            val bitmap = if (photo != null) {
+                runCatching { engine?.thumbnail(photo, edge) }.getOrNull()
+            } else {
+                Gallery.thumbnail(getApplication(), image, edge)
+            }
+            bitmap?.also { thumbs.put(image.id, it) }
+        }
+    }
+
+    /** The file the engine reads: the gallery file itself, or a private copy when it has no readable path. */
+    private fun sourceFile(image: GalleryImage): File {
+        image.path?.let { File(it) }?.takeIf { it.canRead() }?.let { return it }
+        val app = getApplication<Application>()
+        val ext = image.name.substringAfterLast('.', "jpg").filter { it.isLetterOrDigit() }.ifEmpty { "jpg" }
+        val copy = File(File(app.filesDir, "originals").apply { mkdirs() }, "${image.id}.$ext")
+        if (!copy.exists()) {
+            app.contentResolver.openInputStream(image.uri)?.use { input -> copy.outputStream().use { input.copyTo(it) } }
+                ?: throw IllegalStateException("${image.name} is not readable")
+        }
+        return copy
     }
 
     // ---- editor --------------------------------------------------------------------------------
 
-    fun open(photo: Long) {
-        _editing.value = photo
-        _preview.value = thumbs.get(photo)
+    fun open(image: GalleryImage) {
+        _preview.value = thumbs.get(image.id)
         _before.value = null
         _tool.value = null
+        _opening.value = image
         viewModelScope.launch(commands) {
-            run { e -> e.execute("library.select", JSONObject().put("ids", JSONArray().put(photo)).put("active", photo)) }
-            requestRender(draft = false)
+            val e = engine ?: return@launch
+            try {
+                val photo = e.photoForPath(sourceFile(image).absolutePath)
+                opened[image.id] = photo
+                if (_opening.value != image) return@launch // closed while opening
+                editingImage = image
+                _editing.value = photo
+                e.execute("library.select", JSONObject().put("ids", JSONArray().put(photo)).put("active", photo))
+                loadControlsNow()
+                requestRender(draft = false)
+            } catch (t: Throwable) {
+                Log.w(tag, "open ${image.name}", t)
+                messages.trySend("Could not open ${image.name}: ${t.message}")
+            } finally {
+                _opening.value = null
+            }
         }
     }
 
     fun close() {
-        val photo = _editing.value
+        val image = editingImage
+        _opening.value = null
         finishInteraction()
         _editing.value = null
         _tool.value = null
         _preview.value = null
         _before.value = null
-        if (photo != null) refreshThumbnail(photo)
+        editingImage = null
+        if (image != null) refreshThumbnail(image.id)
     }
 
     fun setViewport(width: Int, height: Int) {
@@ -172,23 +198,55 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun selectTool(tool: Tool) {
-        if (tool.id == Tools.AUTO) {
-            runEdit("develop.auto")
-            return
+        when (tool.kind) {
+            ToolKind.Auto -> {
+                _tool.value = null
+                runEdit("develop.auto")
+            }
+            else -> {
+                _tool.value = if (_tool.value?.id == tool.id) null else tool
+                if (tool.kind == ToolKind.Presets) loadPresets()
+                loadControls()
+            }
         }
-        if (tool.controls.isEmpty()) {
-            messages.trySend("${tool.label} is coming in a later milestone")
-            return
+    }
+
+    /** Back to the defaults of every slider in [group], as one undo step. */
+    fun resetGroup(group: Group) {
+        val values = JSONObject()
+        _controls.value.filter { group.matches(it.id) && it.value != it.default }.forEach { values.put(it.id, it.default.toDouble()) }
+        if (values.length() > 0) runEdit("develop.set", JSONObject().put("values", values))
+    }
+
+    fun applyPreset(id: String) = runEdit("preset.apply", JSONObject().put("id", id))
+
+    /** Rotate, flip and crop-reset buttons of the Crop tool: engine commands without parameters. */
+    fun cropCommand(id: String) = runEdit(id)
+
+    /** A centred crop of [aspect] (width / height) of the uncropped photo, or the whole photo for 0. */
+    fun cropAspect(aspect: Float) {
+        val photo = _editing.value ?: return
+        viewModelScope.launch(commands) {
+            val rect = if (aspect <= 0f) {
+                listOf(0.0, 0.0, 1.0, 1.0)
+            } else {
+                // the unedited render has the photo's own proportions (no crop)
+                val original = runCatching { engine?.render(photo, 256, 256, before = true) }.getOrNull() ?: return@launch
+                val image = original.width.toFloat() / original.height.coerceAtLeast(1)
+                val (w, h) = if (aspect < image) aspect / image to 1f else 1f to image / aspect
+                val x0 = (1f - w) / 2f
+                val y0 = (1f - h) / 2f
+                listOf(x0, y0, x0 + w, y0 + h).map { it.toDouble() }
+            }
+            runEdit("crop.set", JSONObject().put("rect", JSONArray(rect)))
         }
-        _tool.value = if (_tool.value?.id == tool.id) null else tool
-        loadControls()
     }
 
     /** A slider moved: one undo step per drag (`develop.beginInteraction` … `endInteraction`). */
     fun setControl(id: String, value: Float) {
         _controls.value = _controls.value.map { if (it.id == id) it.copy(value = value) else it }
         viewModelScope.launch(commands) {
-            run { e ->
+            withEngine { e ->
                 if (!interacting) {
                     val label = _controls.value.firstOrNull { it.id == id }?.label ?: "Edit"
                     e.execute("develop.beginInteraction", JSONObject().put("label", label))
@@ -204,7 +262,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(commands) {
             if (interacting) {
                 interacting = false
-                run { e -> e.execute("develop.endInteraction") }
+                withEngine { e -> e.execute("develop.endInteraction") }
             }
             requestRender(draft = false)
         }
@@ -235,7 +293,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(commands) {
             _busy.value = true
             try {
-                run { e ->
+                withEngine { e ->
                     val dir = File(getApplication<Application>().cacheDir, "exports").apply { mkdirs() }
                     dir.listFiles()?.forEach { it.delete() }
                     val path = e.export(photo, JSONObject().put("format", "jpeg").put("quality", 90), dir.absolutePath)
@@ -251,9 +309,9 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(commands) {
             if (interacting) {
                 interacting = false
-                run { e -> e.execute("develop.endInteraction") }
+                withEngine { e -> e.execute("develop.endInteraction") }
             }
-            run { e -> e.execute(id, params) }
+            withEngine { e -> e.execute(id, params) }
             loadControlsNow()
             requestRender(draft = false)
         }
@@ -264,15 +322,18 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun loadControlsNow() {
-        val tool = _tool.value ?: return
         val e = engine ?: return
         val all = runCatching { e.execute("develop.controls") as? JSONArray }.getOrNull() ?: return
-        val byId = HashMap<String, Control>()
-        for (i in 0 until all.length()) {
-            val o = all.optJSONObject(i) ?: continue
-            runCatching { Control.fromJson(o) }.getOrNull()?.let { byId[it.id] = it }
+        _controls.value = (0 until all.length()).mapNotNull { i -> all.optJSONObject(i)?.let { runCatching { Control.fromJson(it) }.getOrNull() } }
+    }
+
+    private fun loadPresets() {
+        viewModelScope.launch(commands) {
+            val list = runCatching { engine?.execute("presets.list") as? JSONArray }.getOrNull() ?: return@launch
+            _presets.value = (0 until list.length()).mapNotNull { i ->
+                list.optJSONObject(i)?.let { Preset(it.optString("id"), it.optString("name"), it.optString("group", "")) }
+            }.filter { it.id.isNotEmpty() }
         }
-        _controls.value = tool.controls.mapNotNull { byId[it] }
     }
 
     private fun requestRender(draft: Boolean) {
@@ -292,13 +353,13 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             .onFailure { messages.trySend("Render failed: ${it.message}") }
     }
 
-    private fun refreshThumbnail(photo: Long) {
-        thumbs.remove(photo)
+    private fun refreshThumbnail(galleryId: Long) {
+        thumbs.remove(galleryId)
         _thumbVersion.value++
     }
 
     /** Run [f] with the engine, reporting a failure in the snackbar instead of crashing. */
-    private inline fun run(f: (Engine) -> Unit) {
+    private inline fun withEngine(f: (Engine) -> Unit) {
         val e = engine ?: return
         try {
             f(e)

@@ -17,17 +17,27 @@ exports go through the engine's one encoder (`lightcraft_engine::export`).
 
 ## What works (milestone 1)
 
-- **Library grid**: the procedural demo library on first run, photos added with the system Photo
-  Picker (copied into the app's private library), pinch or the grid button to change density.
-- **Editor**: full-bleed photo, pinch and double-tap to zoom, press and hold for the original.
-  Undo, redo and share always in the top bar.
-- **Tool rail** (Lightroom-mobile style): Auto (`develop.auto`), Light, Color (white balance,
-  vibrance, saturation), Effects, Detail. Each opens a slider panel above the rail; ranges, defaults
-  and values come from the engine (`develop.controls`). One drag is one undo step
-  (`develop.beginInteraction`/`endInteraction`), frames render in draft quality while dragging and
-  in full quality on release; double-tap a slider's label to reset it; a haptic tick at its default.
+- **Library = the phone's gallery**: after the media permission (`READ_MEDIA_IMAGES`, or storage
+  before Android 13; a clear prompt, and Settings when it was denied for good) the grid shows every
+  image MediaStore has, newest first, with the system thumbnails. Opening one imports it in place
+  (`Mobile::photo_for_path`): the original stays where it is and the edits live in the app's catalog.
+  No demo or generated pictures. Pinch or the grid button changes density.
+- **Editor** (phone-editor layout): back, undo, redo, compare and share in a thin top bar; the photo
+  edge to edge on black (pinch or double-tap to zoom, press and hold for the original); the open
+  tool's panel above a scrolling tool rail.
+- **Tools**: Presets (`presets.list` / `preset.apply`), Auto (`develop.auto`), Light (+ Curve),
+  Color (+ Mix, Grading, B&W Mix, Calibration), Effects (+ Vignette, Grain), Detail (Sharpening,
+  Noise), Optics (Lens, Chromatic), Geometry (Upright) and Crop (aspect ratios, rotate, flip,
+  straighten). Every slider comes from the engine's control list (`develop.controls`), grouped by
+  id prefix in `Tools.kt`, so a new engine control shows up without app changes. Sliders scrub
+  relative to the finger, snap to their default with a haptic tick, reset on double-tap; one drag is
+  one undo step; each sub-panel has Reset.
 - **Export / share**: JPEG through the engine's exporter, handed to the Android share sheet.
-- Optics, Geometry, Crop, Masking, Remove and Presets are on the rail and come in later milestones.
+- Masking and Remove come with milestones 3 and 4.
+
+**Brand mark**: `res/drawable/ic_brand_mark.xml` (library header) and `ic_launcher_*.xml` (launcher)
+are original artwork. Replace those files, keeping their names, to rebrand. Adobe's logos and other
+Adobe assets may not be used (see `CLAUDE.md`).
 
 ## Build
 
