@@ -3127,6 +3127,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "lightcraft-bgremove"
+version = "0.8.0"
+
+[[package]]
 name = "lightcraft-catalog"
 version = "0.8.0"
 dependencies = [
@@ -3413,6 +3417,8 @@ dependencies = [
 name = "lightcraft-mobile"
 version = "0.8.0"
 dependencies = [
+ "lightcraft-bgremove",
+ "lightcraft-codecs",
  "lightcraft-engine",
  "lightcraft-raster",
  "log",

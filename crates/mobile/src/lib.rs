@@ -18,6 +18,8 @@ use lightcraft_engine::export::{ExportOptions, export_photo};
 use lightcraft_engine::{EngineError, RenderJob, Session};
 use serde_json::{Value, json};
 
+pub use lightcraft_bgremove::EraseOptions;
+
 /// The largest edge a render may ask for (a phone screen is ≤ 4K; exports go through `export.*`).
 pub const MAX_EDGE: usize = 8192;
 
@@ -32,6 +34,46 @@ pub struct Frame {
 /// One engine session shared by every screen of the app.
 pub struct Mobile {
     session: Mutex<Session>,
+    cutout: Mutex<Option<Cutout>>,
+}
+
+/// The background-removal workspace: the edited photo rendered once, and its alpha matte with the
+/// previous mattes for undo. The photo itself is never changed.
+struct Cutout {
+    frame: Frame,
+    alpha: Vec<u8>,
+    history: Vec<Vec<u8>>,
+}
+
+/// How many matte steps undo can go back.
+const CUTOUT_UNDO: usize = 20;
+
+impl Cutout {
+    fn push(&mut self) {
+        if self.history.len() >= CUTOUT_UNDO {
+            self.history.remove(0);
+        }
+        self.history.push(self.alpha.clone());
+    }
+
+    fn image(&self) -> lightcraft_bgremove::Image<'_> {
+        lightcraft_bgremove::Image { width: self.frame.width as usize, height: self.frame.height as usize, rgba: &self.frame.rgba }
+    }
+
+    /// The photo with the matte as its alpha.
+    fn composed(&self, refine: bool) -> Result<Frame, String> {
+        let mut rgba = self.frame.rgba.clone();
+        if refine {
+            let (w, h) = (self.frame.width as usize, self.frame.height as usize);
+            lightcraft_bgremove::decontaminate(w, h, &mut rgba, &self.alpha, 2).map_err(|e| e.to_string())?;
+        }
+        for (px, a) in rgba.chunks_exact_mut(4).zip(&self.alpha) {
+            if let Some(p) = px.get_mut(3) {
+                *p = ((u16::from(*p) * u16::from(*a)) / 255) as u8;
+            }
+        }
+        Ok(Frame { width: self.frame.width, height: self.frame.height, rgba })
+    }
 }
 
 impl Default for Mobile {
@@ -45,12 +87,12 @@ impl Mobile {
     pub fn new() -> Mobile {
         // `with_fs` installs the file decoders (JPEG, PNG, HEIC, raws…): without them every
         // imported photo fails to render with "no decoder available"
-        Mobile { session: Mutex::new(Session::new().with_fs()) }
+        Mobile { session: Mutex::new(Session::new().with_fs()), cutout: Mutex::new(None) }
     }
 
     /// A session with the procedural demo library (first run, screenshots, tests).
     pub fn demo() -> Mobile {
-        Mobile { session: Mutex::new(Session::with_demo().with_fs()) }
+        Mobile { session: Mutex::new(Session::with_demo().with_fs()), cutout: Mutex::new(None) }
     }
 
     fn lock(&self) -> MutexGuard<'_, Session> {
@@ -134,6 +176,131 @@ impl Mobile {
         std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
         std::fs::write(&path, &out.bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(path.to_string_lossy().into_owned())
+    }
+}
+
+impl Mobile {
+    /// A mask on the active photo from a segmenter's output (the phone's on-device subject
+    /// segmentation): `probs` are `side × side` foreground probabilities over the uncropped photo.
+    /// `invert` keeps the rest instead (Background). Returns the engine's answer, as [`Mobile::execute`].
+    pub fn add_seg_mask(&self, name: &str, side: u32, probs: &[f32], invert: bool) -> String {
+        let side = side as usize;
+        if side == 0 || side > 1024 || side.checked_mul(side) != Some(probs.len()) {
+            return failure("BadParams", &format!("a {side}×{side} mask needs {} values, got {}", side.saturating_mul(side), probs.len()));
+        }
+        let logits: Vec<f32> = probs
+            .iter()
+            .map(|p| {
+                let p = if p.is_finite() { p.clamp(1e-4, 1.0 - 1e-4) } else { 1e-4 };
+                let l = (p / (1.0 - p)).ln();
+                if invert { -l } else { l }
+            })
+            .collect();
+        let seg = lightcraft_engine::develop::SegMask::from_logits(side, &logits);
+        let seg = match serde_json::to_value(seg) {
+            Ok(v) => v,
+            Err(e) => return failure("Other", &e.to_string()),
+        };
+        let params = json!({"kind": "prompt", "text": name, "name": name, "seg": seg});
+        match self.lock().execute("mask.add", &params) {
+            Ok(result) => json!({"ok": true, "result": result}).to_string(),
+            Err(e) => engine_failure(&e),
+        }
+    }
+
+    fn cutout(&self) -> MutexGuard<'_, Option<Cutout>> {
+        self.cutout.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Start removing the background of `photo`: renders it with its edits at `long_edge` and starts
+    /// with everything kept. Returns the size.
+    pub fn cutout_begin(&self, photo: u64, long_edge: u32) -> Result<(u32, u32), String> {
+        let frame = self.render(photo, long_edge, long_edge, false, false)?;
+        let n = (frame.width as usize).saturating_mul(frame.height as usize);
+        let size = (frame.width, frame.height);
+        *self.cutout() = Some(Cutout { frame, alpha: vec![255; n], history: Vec::new() });
+        Ok(size)
+    }
+
+    fn with_cutout<T>(&self, f: impl FnOnce(&mut Cutout) -> Result<T, String>) -> Result<T, String> {
+        let mut c = self.cutout();
+        f(c.as_mut().ok_or("no background removal in progress")?)
+    }
+
+    /// Replace the matte with a segmenter's `side × side` foreground probabilities (`invert`: keep the
+    /// background).
+    pub fn cutout_matte(&self, side: u32, probs: &[f32], invert: bool) -> Result<(), String> {
+        self.with_cutout(|c| {
+            let mut next = vec![0u8; c.alpha.len()];
+            lightcraft_bgremove::matte(c.frame.width as usize, c.frame.height as usize, side as usize, probs, invert, &mut next)
+                .map_err(|e| e.to_string())?;
+            c.push();
+            c.alpha = next;
+            Ok(())
+        })
+    }
+
+    /// Magic eraser at the normalized point `(x, y)` of the photo. Returns how many pixels changed.
+    pub fn cutout_erase(&self, x: f32, y: f32, o: &lightcraft_bgremove::EraseOptions) -> Result<usize, String> {
+        self.with_cutout(|c| {
+            if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+                return Err("the point is outside the photo".into());
+            }
+            let px = ((x * c.frame.width as f32) as usize).min(c.frame.width.saturating_sub(1) as usize);
+            let py = ((y * c.frame.height as f32) as usize).min(c.frame.height.saturating_sub(1) as usize);
+            let mut next = c.alpha.clone();
+            let n = lightcraft_bgremove::magic_erase(c.image(), &mut next, px, py, o).map_err(|e| e.to_string())?;
+            if n > 0 {
+                c.push();
+                c.alpha = next;
+            }
+            Ok(n)
+        })
+    }
+
+    /// Undo the last matte step; `false` when there is none.
+    pub fn cutout_undo(&self) -> Result<bool, String> {
+        self.with_cutout(|c| {
+            Ok(match c.history.pop() {
+                Some(a) => {
+                    c.alpha = a;
+                    true
+                }
+                None => false,
+            })
+        })
+    }
+
+    /// Back to everything kept (undoable).
+    pub fn cutout_reset(&self) -> Result<(), String> {
+        self.with_cutout(|c| {
+            c.push();
+            c.alpha.iter_mut().for_each(|a| *a = 255);
+            Ok(())
+        })
+    }
+
+    /// The photo with the current matte as alpha, for the on-screen preview.
+    pub fn cutout_frame(&self) -> Result<Frame, String> {
+        self.with_cutout(|c| c.composed(false))
+    }
+
+    /// Write the cut-out photo as a transparent PNG into `dir` (edges decontaminated when `refine`).
+    pub fn cutout_export(&self, dir: &str, name: &str, refine: bool) -> Result<String, String> {
+        let frame = self.with_cutout(|c| c.composed(refine))?;
+        let img = lightcraft_codecs::encode::EncodeImage::new(frame.width, frame.height, 4, lightcraft_codecs::encode::Samples::U8(&frame.rgba));
+        let bytes = lightcraft_codecs::encode::encode_png(&img, &Default::default()).map_err(|e| e.to_string())?;
+        let stem: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(64).collect();
+        let stem = if stem.is_empty() { "cutout".to_string() } else { stem };
+        std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
+        let path = std::path::Path::new(dir).join(format!("{stem}.png"));
+        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(path.to_string_lossy().into_owned())
+    }
+
+    /// End background removal (frees the rendered photo).
+    pub fn cutout_end(&self) {
+        *self.cutout() = None;
     }
 }
 
@@ -245,6 +412,47 @@ mod tests {
         assert_eq!(m.photos(), vec![id]);
         assert!(m.render(id, 64, 64, false, false).is_ok());
         assert!(m.photo_for_path(dir.join("missing.jpg").to_str().unwrap()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn segmentation_masks_are_added_and_inverted() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        let probs: Vec<f32> = (0..64 * 64).map(|i| if (i % 64) < 32 { 0.95 } else { 0.05 }).collect();
+        assert_eq!(parse(&m.add_seg_mask("Subject", 64, &probs, false))["ok"], true);
+        assert_eq!(parse(&m.add_seg_mask("Background", 64, &probs, true))["ok"], true);
+        let d = parse(&m.execute("develop.get", ""));
+        assert_eq!(d["result"]["masks"].as_array().unwrap().len(), 2, "{d}");
+        assert!(m.render(id, 64, 64, false, false).is_ok());
+        assert_eq!(parse(&m.add_seg_mask("x", 64, &probs[..10], false))["kind"], "BadParams");
+        assert_eq!(parse(&m.add_seg_mask("x", 0, &[], false))["kind"], "BadParams");
+    }
+
+    #[test]
+    fn background_removal_round_trip() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        assert!(m.cutout_frame().is_err(), "nothing started");
+        let (w, h) = m.cutout_begin(id, 96).unwrap();
+        assert_eq!(w.max(h), 96);
+        let o = lightcraft_bgremove::EraseOptions { tolerance: 100.0, contiguous: false, ..Default::default() };
+        assert!(m.cutout_erase(0.5, 0.5, &o).unwrap() > 0);
+        let f = m.cutout_frame().unwrap();
+        assert!(f.rgba.chunks_exact(4).any(|p| p[3] < 255));
+        assert!(m.cutout_undo().unwrap());
+        assert!(m.cutout_frame().unwrap().rgba.chunks_exact(4).all(|p| p[3] == 255));
+        assert!(m.cutout_erase(1.5, 0.5, &o).is_err());
+        m.cutout_matte(2, &[1.0, 0.0, 1.0, 0.0], false).unwrap();
+        assert!(m.cutout_matte(2, &[1.0], false).is_err());
+        let dir = std::env::temp_dir().join(format!("lightcraft-mobile-cutout-{}", std::process::id()));
+        let path = m.cutout_export(dir.to_str().unwrap(), "../evil name", true).unwrap();
+        assert!(path.ends_with("evilname.png"), "{path}");
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']));
+        m.cutout_end();
+        assert!(m.cutout_undo().is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

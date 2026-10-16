@@ -13,8 +13,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use jni::JNIEnv;
-use jni::objects::{JClass, JString};
-use jni::sys::{jboolean, jint, jintArray, jlong, jlongArray, jstring};
+use jni::objects::{JClass, JFloatArray, JString};
+use jni::sys::{jboolean, jfloat, jint, jintArray, jlong, jlongArray, jstring};
 use lightcraft_mobile::{Frame, Mobile};
 
 static SESSIONS: Mutex<Vec<Option<Arc<Mobile>>>> = Mutex::new(Vec::new());
@@ -260,6 +260,171 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeExpor
             std::ptr::null_mut()
         }
     }
+}
+
+fn floats(env: &mut JNIEnv, a: &JFloatArray) -> Result<Vec<f32>, String> {
+    let len = env.get_array_length(a).map_err(|e| e.to_string())?;
+    let len = usize::try_from(len).map_err(|e| e.to_string())?;
+    if len > 4 * 1024 * 1024 {
+        return Err(format!("{len} values is too many"));
+    }
+    let mut out = vec![0f32; len];
+    env.get_float_array_region(a, 0, &mut out).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// Throw `IllegalStateException` for an error; `T::default()` is what Kotlin then never sees.
+fn or_throw<T: Default>(env: &mut JNIEnv, r: Result<T, String>) -> T {
+    r.unwrap_or_else(|e| {
+        throw(env, &e);
+        T::default()
+    })
+}
+
+/// Adds a mask from on-device segmentation (`side × side` probabilities); returns the engine's JSON answer.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeAddSegMask<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    name: JString<'l>,
+    side: jint,
+    probs: JFloatArray<'l>,
+    invert: jboolean,
+) -> jstring {
+    let r = rust_string(&mut env, &name).and_then(|name| {
+        let probs = floats(&mut env, &probs)?;
+        let side = u32::try_from(side).map_err(|_| format!("bad mask size {side}"))?;
+        guarded(|| Ok(session(handle)?.add_seg_mask(&name, side, &probs, invert != 0)))
+    });
+    let answer = r.unwrap_or_else(|e| error_json(&e));
+    java_string(&mut env, &answer)
+}
+
+/// `[width, height]` of the background-removal workspace.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutoutBegin<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    long_edge: jint,
+) -> jintArray {
+    let r = guarded(|| session(handle)?.cutout_begin(photo_id(photo)?, edge(long_edge)?));
+    match r {
+        Ok((w, h)) => int_array(&mut env, &[i32::try_from(w).unwrap_or(0), i32::try_from(h).unwrap_or(0)]),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutoutMatte<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    side: jint,
+    probs: JFloatArray<'l>,
+    invert: jboolean,
+) {
+    let r = floats(&mut env, &probs).and_then(|probs| {
+        let side = u32::try_from(side).map_err(|_| format!("bad mask size {side}"))?;
+        guarded(|| session(handle)?.cutout_matte(side, &probs, invert != 0))
+    });
+    or_throw(&mut env, r)
+}
+
+/// Magic eraser at a normalized point; returns how many pixels changed.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutoutErase<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    x: jfloat,
+    y: jfloat,
+    tolerance: jfloat,
+    contiguous: jboolean,
+    sample: jint,
+    anti_alias: jboolean,
+    feather: jfloat,
+    opacity: jfloat,
+) -> jint {
+    let o = lightcraft_mobile::EraseOptions {
+        tolerance,
+        contiguous: contiguous != 0,
+        sample: u32::try_from(sample).unwrap_or(0),
+        anti_alias: anti_alias != 0,
+        feather,
+        opacity,
+    };
+    let r = guarded(|| session(handle)?.cutout_erase(x, y, &o)).map(|n| i32::try_from(n).unwrap_or(i32::MAX));
+    or_throw(&mut env, r)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutoutUndo<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+) -> jboolean {
+    let r = guarded(|| session(handle)?.cutout_undo());
+    u8::from(or_throw(&mut env, r))
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutoutReset<'l>(mut env: JNIEnv<'l>, _class: JClass<'l>, handle: jlong) {
+    let r = guarded(|| session(handle)?.cutout_reset());
+    or_throw(&mut env, r)
+}
+
+/// The photo with the matte as alpha: `[width, height, argb…]`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutoutFrame<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+) -> jintArray {
+    match guarded(|| session(handle)?.cutout_frame()) {
+        Ok(f) => int_array(&mut env, &frame_ints(&f)),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Writes the transparent PNG into `dir`; returns its path.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutoutExport<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    dir: JString<'l>,
+    name: JString<'l>,
+    refine: jboolean,
+) -> jstring {
+    let r = rust_string(&mut env, &dir).and_then(|dir| {
+        let name = rust_string(&mut env, &name)?;
+        guarded(|| session(handle)?.cutout_export(&dir, &name, refine != 0))
+    });
+    match r {
+        Ok(path) => java_string(&mut env, &path),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutoutEnd(_env: JNIEnv, _class: JClass, handle: jlong) {
+    let _ = guarded(|| {
+        session(handle)?.cutout_end();
+        Ok(())
+    });
 }
 
 #[cfg(test)]
