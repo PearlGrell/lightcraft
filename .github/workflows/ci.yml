@@ -1,0 +1,43 @@
+# The workspace quality gate: `cargo xtask ci` (fmt, clippy, heif, tests, parity, layers, assets,
+# wasm) — the same command CLAUDE.md requires before every commit, for machines without a Rust
+# toolchain of their own. The run's report and Markdown summary are uploaded as artifacts.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ci
+      - name: cargo xtask ci
+        run: cargo xtask ci --summary-md
+      - name: Add the summary to the job page
+        if: always()
+        run: cat target/ci/summary.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-report
+          path: |
+            target/ci/report.json
+            target/ci/summary.md
+          if-no-files-found: warn
