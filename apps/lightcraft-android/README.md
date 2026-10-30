@@ -32,17 +32,29 @@ exports go through the engine's one encoder (`lightcraft_engine::export`).
   bottom the open tool's panel, a tool row and a six-tab bar (icon over label, the current one on a
   blue square): **Actions** (Auto, Pop, Sky, B&W, Remove BG, Reset), **Presets** (Recommended /
   Favorites / Yours tabs, one row per group that opens into live thumbnails rendered with
-  `Mobile::preset_thumbnail`; long-press to favourite or delete), **Crop** (rotate, flip, a
-  straighten dial, then Aspect ratio tiles and Geometry), **Edit** (Auto | Light, Color, Curve,
+  `Mobile::preset_thumbnail`; long-press to favourite or delete), **Crop** (drag the frame's
+  corners, edges or middle, rotate, flip, a straighten dial, then Aspect ratio tiles and Geometry),
+  **Edit** (Auto | Light, Color, Curve,
   Effects, Detail, Optics), **Masking** and **Remove**. Every slider comes from the engine's control
   list (`develop.controls`), grouped by id prefix in `Tools.kt`. Sliders scrub relative to the
   finger, snap to their default with a haptic tick, reset on double-tap; one drag is one undo step.
 - **Point tone curve** (`ui/CurveEditor.kt`): RGB, Red, Green and Blue; tap to add a point, drag to
   move it, drag an inner point off the grid to remove it (`develop.curve`).
+- **Crop by hand**: in the Crop tab the preview shows the *whole* photo
+  (`Mobile::render_uncropped`), dimmed outside the crop, so a handle can be dragged back outwards.
+  A drag on a corner, an edge or the middle goes to `crop.drag`, which owns the anchoring, the
+  aspect lock and the image bounds; the frame is drawn from `develop.get` → `crop.geometry`, so it
+  always shows the crop the engine actually has. Pinch-zoom, double-tap-zoom and compare-hold are
+  off while the tool is open, because each used to swallow the drag.
 - **AI masks** (Masking tab): Subject and Background come from ML Kit Subject Segmentation
   (`Segmenter.kt`, on-device; Play services downloads the model on first use) and enter the engine
   as segmentation masks (`Mobile::add_seg_mask` → `mask.add`); Sky is the engine's own sky mask;
   Linear and Radial gradients too. Each mask has local sliders, invert and delete.
+- **Refining any mask**: **Add** and **Erase** are selection operations, as the desktop's ＋/− are —
+  each paints positively into a brush component whose op adds to or subtracts from the mask
+  (`mask.addComponent`), so an AI subject, the sky or a gradient can all be brushed away. (The
+  brush's own `erase` flag only rubs paint out of paint, which is why it could never touch an AI
+  selection.) **Sample color** appears only on a mask that has a colour range to put a sample in.
 - **Remove**: one-tap background removal (ML Kit matte) and a Magic Eraser (tap to erase similar
   colour; tolerance in CIELAB ΔE, contiguous, sample size, anti-alias, feather, opacity), with undo,
   reset and transparent PNG export with edge decontamination. The pixel work is the pure-Rust

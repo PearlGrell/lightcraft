@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import ai.storyteller.lightcraft.android.Control
+import ai.storyteller.lightcraft.android.CropState
 import ai.storyteller.lightcraft.android.CurvePoint
 import ai.storyteller.lightcraft.android.MainTab
 import ai.storyteller.lightcraft.android.BrushSettings
@@ -211,7 +212,18 @@ class EditorChromeTest {
                     androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
                         val w = constraints.maxWidth
                         val h = constraints.maxHeight
-                        fitRect(bmp.width, bmp.height, androidx.compose.ui.unit.IntSize(w, h))?.let { CropFrame(it) }
+                        // a crop taken in from every edge: the frame sits inside the photo, the rest
+                        // of it dimmed, with the corner and edge handles that drag it
+                        fitRect(bmp.width, bmp.height, androidx.compose.ui.unit.IntSize(w, h))?.let { r ->
+                            val crop = CropState(listOf(0.18f, 0.12f, 0.82f, 0.88f))
+                            val box = androidx.compose.ui.geometry.Rect(
+                                r.left + crop.x0 * r.width,
+                                r.top + crop.y0 * r.height,
+                                r.left + crop.x1 * r.width,
+                                r.top + crop.y1 * r.height,
+                            )
+                            CropFrame(box, dimTo = r)
+                        }
                     }
                 }
                 Column(Modifier.fillMaxWidth().background(Lc.chrome)) {

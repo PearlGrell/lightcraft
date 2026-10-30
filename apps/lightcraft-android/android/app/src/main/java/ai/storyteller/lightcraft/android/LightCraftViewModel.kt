@@ -30,6 +30,32 @@ data class Preset(val id: String, val name: String, val group: String, val built
 /** A point of a tone curve, both coordinates 0..1. */
 data class CurvePoint(val x: Float, val y: Float)
 
+/**
+ * The photo's crop (`develop.get` → `crop.geometry`): [rect] is `[x0, y0, x1, y1]` normalized in
+ * the straightened frame, [angle] the straighten in degrees.
+ */
+data class CropState(val rect: List<Float> = listOf(0f, 0f, 1f, 1f), val angle: Float = 0f) {
+    val x0 get() = rect.getOrElse(0) { 0f }
+    val y0 get() = rect.getOrElse(1) { 0f }
+    val x1 get() = rect.getOrElse(2) { 1f }
+    val y1 get() = rect.getOrElse(3) { 1f }
+
+    companion object {
+        /** `crop` out of `develop.get` (`{geometry: {rect: {x0,y0,x1,y1}, angle}}`). */
+        fun fromJson(o: JSONObject?): CropState {
+            val g = o?.optJSONObject("geometry") ?: return CropState()
+            val angle = g.optDouble("angle", 0.0).toFloat()
+            val r = g.optJSONObject("rect") ?: return CropState(angle = angle)
+            val (x0, x1) = r.optDouble("x0", 0.0).toFloat() to r.optDouble("x1", 1.0).toFloat()
+            val (y0, y1) = r.optDouble("y0", 0.0).toFloat() to r.optDouble("y1", 1.0).toFloat()
+            val rect = listOf(minOf(x0, x1), minOf(y0, y1), maxOf(x0, x1), maxOf(y0, y1))
+            // a degenerate rect would collapse the frame the handles are drawn on: show all of it
+            val sane = rect[2] - rect[0] > 1e-4f && rect[3] - rect[1] > 1e-4f
+            return CropState(if (sane) rect else listOf(0f, 0f, 1f, 1f), angle)
+        }
+    }
+}
+
 /** One piece of a mask's selection (`develop.get` → `masks[].components`): what it is and how it joins. */
 data class MaskPart(val kind: String, val op: String)
 
@@ -169,6 +195,14 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The History step the photo was at when Crop opened: Cancel goes back to it. */
     private var cropStart: Int? = null
+
+    /** The photo's crop, for the crop frame to draw and for `crop.drag` to start from. */
+    private val _crop = MutableStateFlow(CropState())
+    val crop: StateFlow<CropState> = _crop.asStateFlow()
+
+    /** Whether the Crop tool is open: the preview then shows the whole photo, crop and all. */
+    private val _cropping = MutableStateFlow(false)
+    val cropping: StateFlow<Boolean> = _cropping.asStateFlow()
 
     /** The photo the engine was last told to make active, so [activate] does not repeat itself. */
     @Volatile private var activated: Long? = null
@@ -433,6 +467,8 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         _preview.value = null
         _before.value = null
         activated = null
+        _cropping.value = false
+        _crop.value = CropState()
         editingImage = null
         if (image != null) {
             if (changed) markEdited(image.id)
@@ -678,26 +714,58 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- crop ----------------------------------------------------------------------------------
 
-    /** Crop mode opens: remember the History step so Cancel can return to it. */
+    /** Crop mode opens: remember the History step so Cancel can return to it, and show the whole photo. */
     fun beginCrop() {
         cropStart = null
+        if (_cropping.value) return
+        _cropping.value = true
         viewModelScope.launch(commands) {
             cropStart = runCatching { (engine?.execute("history.list") as? JSONObject)?.optInt("cursor", -1) }.getOrNull()?.takeIf { it >= 0 }
+            loadState()
+            requestRender(draft = false)
+        }
+    }
+
+    /**
+     * One move of a crop handle. [handle] is `crop.drag`'s numbering (0..3 corners from the top
+     * left clockwise, 4..7 top/right/bottom/left edges, 8 the whole frame); [from] and [to] are
+     * normalized points in the straightened frame, [start] the crop the drag began from. The crop
+     * model decides what the drag does — the anchor, the aspect lock, the image bounds — so this
+     * only reports where the finger went down and where it is now.
+     */
+    fun cropDrag(handle: Int, from: Pair<Float, Float>, to: Pair<Float, Float>, start: CropState) {
+        viewModelScope.launch(commands) {
+            withEngine { e ->
+                begin(e, "Crop")
+                e.execute(
+                    "crop.drag",
+                    JSONObject()
+                        .put("handle", handle)
+                        .put("from", JSONArray(listOf(from.first.toDouble(), from.second.toDouble())))
+                        .put("to", JSONArray(listOf(to.first.toDouble(), to.second.toDouble())))
+                        .put("start", JSONArray(start.rect.map { it.toDouble() })),
+                )
+            }
+            loadState()
+            requestRender(draft = true)
         }
     }
 
     /** Crop's ✕: every crop, rotate and straighten change since [beginCrop] is undone. */
     fun cancelCrop() {
+        _cropping.value = false
         viewModelScope.launch(commands) {
             if (interacting) {
                 interacting = false
                 withEngine { e -> e.execute("develop.endInteraction") }
             }
-            val start = cropStart ?: return@launch
+            val start = cropStart
             cropStart = null
-            withEngine { e ->
-                val now = (e.execute("history.list") as? JSONObject)?.optInt("cursor", -1) ?: -1
-                if (now != start) e.execute("history.restore", JSONObject().put("index", start))
+            if (start != null) {
+                withEngine { e ->
+                    val now = (e.execute("history.list") as? JSONObject)?.optInt("cursor", -1) ?: -1
+                    if (now != start) e.execute("history.restore", JSONObject().put("index", start))
+                }
             }
             afterEdit()
         }
@@ -706,6 +774,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     /** Crop's ✓: keeps the changes. */
     fun commitCrop() {
         cropStart = null
+        _cropping.value = false
         finishInteraction()
     }
 
@@ -1622,6 +1691,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 list.ifEmpty { listOf(CurvePoint(0f, 0f), CurvePoint(1f, 1f)) }
             }
         }
+        _crop.value = CropState.fromJson(d.optJSONObject("crop"))
         _spots.value = spotViews(e, d.optJSONArray("spots"))
         val masks = d.optJSONArray("masks")
         _masks.value = (0 until (masks?.length() ?: 0)).mapNotNull { i -> masks?.optJSONObject(i)?.let { MaskInfo.fromJson(it) } }
@@ -1639,7 +1709,14 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         val (w, h) = if (draft) (vw / 2).coerceAtLeast(320) to (vh / 2).coerceAtLeast(320) else vw to vh
         val t0 = System.nanoTime()
         val overlay = _activeMask.value.takeIf { _tab.value == MainTab.Masking && _maskOverlay.value }
-        runCatching { if (overlay != null) e.renderMask(photo, w, h, overlay, draft) else e.render(photo, w, h, draft = draft) }
+        runCatching {
+            when {
+                // the crop tool shows the whole photo, so a handle can be dragged back outwards
+                _cropping.value -> e.renderUncropped(photo, w, h, draft)
+                overlay != null -> e.renderMask(photo, w, h, overlay, draft)
+                else -> e.render(photo, w, h, draft = draft)
+            }
+        }
             .onSuccess {
                 if (_editing.value == photo) {
                     rendered = true

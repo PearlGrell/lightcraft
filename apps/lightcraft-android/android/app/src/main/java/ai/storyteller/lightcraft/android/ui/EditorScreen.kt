@@ -101,6 +101,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -133,6 +134,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.storyteller.lightcraft.android.Control
+import ai.storyteller.lightcraft.android.CropState
 import ai.storyteller.lightcraft.android.LightCraftViewModel
 import ai.storyteller.lightcraft.android.MainTab
 import ai.storyteller.lightcraft.android.MaskInfo
@@ -181,6 +183,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
     val selection by vm.selection.collectAsStateWithLifecycle()
     val pickObject by vm.pickObject.collectAsStateWithLifecycle()
     val spots by vm.spots.collectAsStateWithLifecycle()
+    val crop by vm.crop.collectAsStateWithLifecycle()
     val generating by vm.generating.collectAsStateWithLifecycle()
     val painting = chosen && ((tab == MainTab.Remove && tool?.kind == ToolKind.Brush && !(tool?.id == "fill" && pickObject)) || (tab == MainTab.Masking && maskBrush))
     val tapping = chosen && (picker != Picker.None || painting || (tab == MainTab.Remove && (tool?.id == "eraser" || tool?.id == "redeye" || tool?.id == "fill")))
@@ -188,6 +191,14 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
     // tap tools (pickers, Red Eye, Tap object, Eraser) aim with a loupe: press, slide, lift
     val aiming = tapping && !painting
     var aim by remember { mutableStateOf<Offset?>(null) }
+    // crop works on the whole photo at 1:1, and the frame is only drawn there: entering the tool
+    // zoomed in would otherwise leave no handles to grab
+    LaunchedEffect(cropping) {
+        if (cropping) {
+            zoom = 1f
+            pan = Offset.Zero
+        }
+    }
     val leaveTab = { commitCrop: Boolean ->
         if (cropping) {
             if (commitCrop) vm.commitCrop() else vm.cancelCrop()
@@ -247,7 +258,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
             Box(
                 Modifier
                     .fillMaxSize()
-                    .pointerInput(photo, removing, painting, aiming) {
+                    .pointerInput(photo, removing, painting, aiming, cropping) {
                         if (aiming) {
                             awaitEachGesture {
                                 val down = awaitFirstDown()
@@ -277,17 +288,20 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                                 c.consume()
                                 stroke = stroke + c.position
                             }
-                        } else if (!removing) {
+                        } else if (!removing && !cropping) {
+                            // not while cropping: this consumes every drag and throws it away at
+                            // zoom 1, which is exactly where the crop handles live
                             detectTransformGestures { _, p, z, _ ->
                                 zoom = (zoom * z).coerceIn(1f, 8f)
                                 pan = if (zoom == 1f) Offset.Zero else pan + p
                             }
                         }
                     }
-                    .pointerInput(photo, removing, fit, tapping, zoom, pan) {
+                    .pointerInput(photo, removing, fit, tapping, zoom, pan, cropping) {
                         detectTapGestures(
                             onDoubleTap = {
-                                if (!removing && !painting) {
+                                // zooming while cropping would hide the frame mid-drag
+                                if (!removing && !painting && !cropping) {
                                     zoom = if (zoom > 1f) 1f else 2.5f
                                     pan = Offset.Zero
                                 }
@@ -298,7 +312,8 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                                 vm.tapPhoto(q.x, q.y)
                             },
                             onPress = {
-                                if (removing || tapping) return@detectTapGestures
+                                // a slow grab at a handle must not turn into compare-hold
+                                if (removing || tapping || cropping) return@detectTapGestures
                                 vm.loadBefore()
                                 val released = kotlinx.coroutines.withTimeoutOrNull(320) { tryAwaitRelease() }
                                 if (released == null) {
@@ -330,7 +345,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                 } else {
                     CircularProgressIndicator(Modifier.align(Alignment.Center), color = Lc.accent)
                 }
-                if (cropping && fit != null && zoom == 1f) CropFrame(fit)
+                if (cropping && fit != null && zoom == 1f) CropOverlay(fit, crop, vm)
                 if (removing && tool?.kind == ToolKind.Brush && fit != null && zoom == 1f) SpotOutlines(spots, fit)
                 if (removing && tool?.id == "fill" && fit != null && zoom == 1f) selection?.let { SelectionOverlay(it, SEL, fit) }
                 if (stroke.isNotEmpty() && fit != null) BrushStroke(stroke, brush.size * maxOf(fit.width, fit.height) * zoom, (brush.erase && tab == MainTab.Masking) || (removing && tool?.id == "fill"))
@@ -1037,10 +1052,100 @@ internal fun CropTopBar(aspect: String, onHelp: () -> Unit) {
     }
 }
 
-/** The crop frame over the photo: a thin border, rule-of-thirds lines and corner and edge handles. */
+/**
+ * The crop frame over the photo, and the drags that move it. [frame] is where the **uncropped**
+ * photo is drawn, [crop] the crop inside it; a drag on a corner, an edge or the middle goes to
+ * `crop.drag`, which owns the anchoring, the aspect lock and the image bounds.
+ */
 @Composable
-internal fun CropFrame(r: Rect) {
+internal fun CropOverlay(frame: Rect, crop: CropState, vm: LightCraftViewModel) {
+    val state = androidx.compose.runtime.rememberUpdatedState(crop)
+    val box = cropRect(frame, crop)
+    Box(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(frame) {
+                val reach = 28.dp.toPx()
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    val start = state.value
+                    val at = cropRect(frame, start)
+                    val handle = cropHandleAt(at, down.position, reach) ?: return@awaitEachGesture
+                    down.consume()
+                    val from = toStraight(frame, down.position, start.angle)
+                    var last = down.position
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        change.consume()
+                        if (change.position != last) {
+                            last = change.position
+                            vm.cropDrag(handle, from, toStraight(frame, change.position, start.angle), start)
+                        }
+                    }
+                    vm.finishInteraction()
+                }
+            },
+    ) {
+        CropFrame(box, dimTo = frame)
+    }
+}
+
+/** Where [crop] sits inside [frame] on screen. */
+private fun cropRect(frame: Rect, crop: CropState): Rect = Rect(
+    frame.left + crop.x0 * frame.width,
+    frame.top + crop.y0 * frame.height,
+    frame.left + crop.x1 * frame.width,
+    frame.top + crop.y1 * frame.height,
+)
+
+/**
+ * A point on screen as 0..1 of the **straightened** frame — the space `crop.drag` works in. That is
+ * [frame]'s own 0..1 (a drag may leave the photo, so it is not clamped) turned about the centre by
+ * the straighten angle, mirroring `to_straight` in the desktop's crop tool. The frame's screen size
+ * stands in for the photo's pixel size: the rotation is about the centre, so the scale cancels.
+ */
+internal fun toStraight(frame: Rect, o: Offset, angle: Float): Pair<Float, Float> {
+    val (w, h) = frame.width.coerceAtLeast(1f) to frame.height.coerceAtLeast(1f)
+    val px = o.x - frame.left
+    val py = o.y - frame.top
+    if (angle == 0f) return px / w to py / h
+    val a = Math.toRadians(angle.toDouble())
+    val (cos, sin) = kotlin.math.cos(a) to kotlin.math.sin(a)
+    val dx = px - w / 2f
+    val dy = py - h / 2f
+    val rx = dx * cos - dy * sin + w / 2f
+    val ry = dx * sin + dy * cos + h / 2f
+    return (rx / w).toFloat() to (ry / h).toFloat()
+}
+
+/**
+ * Which handle [o] grabs, in `crop.drag`'s numbering: 0..3 the corners from the top left clockwise,
+ * 4..7 the top, right, bottom and left edges, 8 the whole frame. `null`: nothing there.
+ */
+internal fun cropHandleAt(box: Rect, o: Offset, reach: Float): Int? {
+    val spots = listOf(
+        box.topLeft, box.topRight, box.bottomRight, box.bottomLeft,
+        Offset(box.center.x, box.top), Offset(box.right, box.center.y), Offset(box.center.x, box.bottom), Offset(box.left, box.center.y),
+    )
+    // the nearest handle within reach, so a grab between a corner and an edge takes the closer one
+    val near = spots.withIndex().filter { (_, p) -> (p - o).getDistance() < reach }.minByOrNull { (_, p) -> (p - o).getDistance() }
+    return near?.index ?: 8.takeIf { box.contains(o) }
+}
+
+/** The crop frame itself: the area outside it dimmed, a thin border, thirds, corner and edge handles. */
+@Composable
+internal fun CropFrame(r: Rect, dimTo: Rect? = null) {
     Canvas(Modifier.fillMaxSize()) {
+        // the photo outside the crop, dimmed: four bands, so no transparency maths is needed
+        dimTo?.let { d ->
+            val shade = Color.Black.copy(alpha = 0.45f)
+            drawRect(shade, Offset(d.left, d.top), Size(d.width, (r.top - d.top).coerceAtLeast(0f)))
+            drawRect(shade, Offset(d.left, r.bottom), Size(d.width, (d.bottom - r.bottom).coerceAtLeast(0f)))
+            drawRect(shade, Offset(d.left, r.top), Size((r.left - d.left).coerceAtLeast(0f), r.height))
+            drawRect(shade, Offset(r.right, r.top), Size((d.right - r.right).coerceAtLeast(0f), r.height))
+        }
         val line = 1.dp.toPx()
         drawRect(Color.White, Offset(r.left, r.top), Size(r.width, r.height), style = androidx.compose.ui.graphics.drawscope.Stroke(line))
         for (i in 1..2) {

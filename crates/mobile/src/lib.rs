@@ -582,6 +582,47 @@ mod tests {
     }
 
     #[test]
+    fn dragging_a_crop_handle_moves_that_edge_only() {
+        // The contract the phone's crop handles rely on: a handle number, the point the finger went
+        // down at and the point it is at now, both in the straightened frame, plus the crop the
+        // drag began from. `crop.drag` keeps the opposite edges and stops at the image edge.
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        activate(&m, id);
+        let crop_now = || {
+            let d = parse(&m.execute("develop.get", "{}"));
+            let r = &d["result"]["crop"]["geometry"]["rect"];
+            [r["x0"].as_f64(), r["y0"].as_f64(), r["x1"].as_f64(), r["y1"].as_f64()].map(|v| v.unwrap_or(-1.0))
+        };
+        assert_eq!(crop_now(), [0.0, 0.0, 1.0, 1.0], "the whole photo to begin with");
+
+        // handle 2 is the bottom-right corner, dragged in towards the middle
+        let drag = json!({"handle": 2, "from": [1.0, 1.0], "to": [0.7, 0.6], "start": [0.0, 0.0, 1.0, 1.0]});
+        assert_eq!(parse(&m.execute("crop.drag", &drag.to_string()))["ok"], true);
+        let [x0, y0, x1, y1] = crop_now();
+        assert!((x0 - 0.0).abs() < 1e-6 && (y0 - 0.0).abs() < 1e-6, "the opposite corner stays put: {x0}, {y0}");
+        assert!(x1 < 0.75 && y1 < 0.65, "the dragged corner followed the finger: {x1}, {y1}");
+
+        // handle 8 moves the whole frame; its size is kept
+        let (w, h) = (x1 - x0, y1 - y0);
+        let drag = json!({"handle": 8, "from": [0.35, 0.3], "to": [0.45, 0.35], "start": [x0, y0, x1, y1]});
+        assert_eq!(parse(&m.execute("crop.drag", &drag.to_string()))["ok"], true);
+        let [mx0, my0, mx1, my1] = crop_now();
+        assert!(mx0 > x0 && my0 > y0, "the frame moved: {mx0}, {my0}");
+        assert!(((mx1 - mx0) - w).abs() < 1e-3 && ((my1 - my0) - h).abs() < 1e-3, "and kept its size");
+
+        // a drag far outside stops at the image edge instead of leaving it
+        let drag = json!({"handle": 2, "from": [0.5, 0.5], "to": [9.0, 9.0], "start": [0.1, 0.1, 0.5, 0.5]});
+        assert_eq!(parse(&m.execute("crop.drag", &drag.to_string()))["ok"], true);
+        let [_, _, ex1, ey1] = crop_now();
+        assert!(ex1 <= 1.0 + 1e-6 && ey1 <= 1.0 + 1e-6, "the crop stays inside the photo: {ex1}, {ey1}");
+
+        // and hostile input is an error, not a panic
+        assert_eq!(parse(&m.execute("crop.drag", &json!({"handle": 99, "from": [0, 0], "to": [1, 1]}).to_string()))["ok"], false);
+        assert_eq!(parse(&m.execute("crop.drag", &json!({"handle": 0, "from": ["x"], "to": [1, 1]}).to_string()))["ok"], false);
+    }
+
+    #[test]
     fn a_colour_range_mask_samples_the_colour_it_is_given() {
         // The exact sequence the phone's colour picker runs: select the photo (which clears the
         // engine's mask selection), then sample — which is why it names the mask by id.
