@@ -56,6 +56,21 @@ data class CropState(val rect: List<Float> = listOf(0f, 0f, 1f, 1f), val angle: 
     }
 }
 
+/**
+ * The switches that decide whether whole groups of sliders can do anything at all. Several panels
+ * are generated straight from `develop.controls`, so they list sliders the engine will ignore until
+ * the matching switch is on — which is why the editor shows the switch and greys the rest out.
+ */
+data class Gates(val bw: Boolean = false, val hdr: Boolean = false, val lensProfile: Boolean = false) {
+    companion object {
+        fun fromJson(d: JSONObject): Gates = Gates(
+            bw = d.optString("treatment", "color") == "bw",
+            hdr = d.optJSONObject("hdr")?.optBoolean("enabled", false) ?: false,
+            lensProfile = d.optJSONObject("optics")?.optBoolean("lens_profile", false) ?: false,
+        )
+    }
+}
+
 /** One piece of a mask's selection (`develop.get` → `masks[].components`): what it is and how it joins. */
 data class MaskPart(val kind: String, val op: String)
 
@@ -195,6 +210,22 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The History step the photo was at when Crop opened: Cancel goes back to it. */
     private var cropStart: Int? = null
+
+    /**
+     * The window of the zoomed view to render at 1:1, in the pixels of a `fullW × fullH` frame, or
+     * `null` at fit. Without this a zoomed view is the fit-sized bitmap magnified, so every slider
+     * that works on pixels — sharpening, noise reduction, grain, chromatic aberration, defringe —
+     * could never show what it does at any zoom level.
+     */
+    private val _zoomWindow = MutableStateFlow<IntArray?>(null)
+
+    /** Whether the preview currently holds a 1:1 window rather than the whole frame. */
+    private val _zoomed = MutableStateFlow(false)
+    val zoomed: StateFlow<Boolean> = _zoomed.asStateFlow()
+
+    /** Which slider groups are switched on (B&W, HDR, lens profile). */
+    private val _gates = MutableStateFlow(Gates())
+    val gates: StateFlow<Gates> = _gates.asStateFlow()
 
     /** The photo's crop, for the crop frame to draw and for `crop.drag` to start from. */
     private val _crop = MutableStateFlow(CropState())
@@ -556,6 +587,25 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             withEngine { e ->
                 begin(e, _controls.value.firstOrNull { it.id == id }?.label ?: "Edit")
                 e.execute("develop.set", JSONObject().put("control", id).put("value", value.toDouble()))
+            }
+            requestRender(draft = true)
+        }
+    }
+
+    /**
+     * Several controls in one step, for a widget that moves more than one at a time — the colour
+     * grading wheel sets a range's hue and saturation together, which is the only way either of
+     * them does anything (hue at saturation 0 is a no-op). One drag is still one undo step.
+     */
+    fun setControls(values: Map<String, Float>, label: String) {
+        if (values.isEmpty()) return
+        _controls.value = _controls.value.map { c -> values[c.id]?.let { c.copy(value = it) } ?: c }
+        viewModelScope.launch(commands) {
+            withEngine { e ->
+                begin(e, label)
+                val json = JSONObject()
+                values.forEach { (id, v) -> json.put(id, v.toDouble()) }
+                e.execute("develop.set", JSONObject().put("values", json))
             }
             requestRender(draft = true)
         }
@@ -1310,6 +1360,31 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     /** White balance presets: asShot, auto, daylight, cloudy, shade, tungsten, fluorescent, flash. */
     fun setWhiteBalance(mode: String) = runEdit("develop.wb", JSONObject().put("mode", mode))
 
+    /**
+     * The zoomed view asks for these pixels: the `w × h` window at ([x], [y]) of a [fullW]×[fullH]
+     * frame. The editor works this out from the photo's rect, the zoom and the pan, because that is
+     * where the geometry lives. Call [clearZoomWindow] when the view is back to fit.
+     */
+    fun setZoomWindow(fullW: Int, fullH: Int, x: Int, y: Int, w: Int, h: Int) {
+        val want = intArrayOf(fullW, fullH, x, y, w, h)
+        if (_zoomWindow.value?.contentEquals(want) == true) return
+        _zoomWindow.value = want
+        requestRender(draft = true)
+    }
+
+    fun clearZoomWindow() {
+        if (_zoomWindow.value == null) return
+        _zoomWindow.value = null
+        _zoomed.value = false
+        requestRender(draft = false)
+    }
+
+    /** The B&W / Colour switch above the B&W mix, whose eight sliders do nothing in colour. */
+    fun setBlackAndWhite(on: Boolean) = runEdit("develop.treatment", JSONObject().put("bw", on))
+
+    /** The HDR switch above the HDR sliders, which the engine ignores until HDR editing is on. */
+    fun setHdr(on: Boolean) = runEdit("develop.hdr", JSONObject().put("enabled", on))
+
     /** Upright: off, auto, level, vertical, full. */
     fun upright(mode: String) = runEdit("geometry.upright", JSONObject().put("mode", mode))
 
@@ -1691,6 +1766,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 list.ifEmpty { listOf(CurvePoint(0f, 0f), CurvePoint(1f, 1f)) }
             }
         }
+        _gates.value = Gates.fromJson(d)
         _crop.value = CropState.fromJson(d.optJSONObject("crop"))
         _spots.value = spotViews(e, d.optJSONArray("spots"))
         val masks = d.optJSONArray("masks")
@@ -1709,11 +1785,20 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         val (w, h) = if (draft) (vw / 2).coerceAtLeast(320) to (vh / 2).coerceAtLeast(320) else vw to vh
         val t0 = System.nanoTime()
         val overlay = _activeMask.value.takeIf { _tab.value == MainTab.Masking && _maskOverlay.value }
+        // a zoomed view renders its own window at 1:1; at fit, the whole frame as before
+        val win = _zoomWindow.value.takeIf { !_cropping.value && overlay == null }
+        var window = false
         runCatching {
             when {
                 // the crop tool shows the whole photo, so a handle can be dragged back outwards
                 _cropping.value -> e.renderUncropped(photo, w, h, draft)
                 overlay != null -> e.renderMask(photo, w, h, overlay, draft)
+                win != null -> {
+                    val region = e.renderRegion(photo, win[0], win[1], win[2], win[3], win[4], win[5], draft = draft)
+                    // the engine says no when the window needs more than one render can hold
+                    window = region != null
+                    region ?: e.render(photo, w, h, draft = draft)
+                }
                 else -> e.render(photo, w, h, draft = draft)
             }
         }
@@ -1721,6 +1806,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 if (_editing.value == photo) {
                     rendered = true
                     _preview.value = it
+                    _zoomed.value = window
                     if (!draft) _generating.value = false
                 }
                 Log.d(tag, "render ${it.width}x${it.height} draft=$draft ${(System.nanoTime() - t0) / 1_000_000} ms")

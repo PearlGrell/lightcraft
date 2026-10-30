@@ -135,6 +135,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.storyteller.lightcraft.android.Control
 import ai.storyteller.lightcraft.android.CropState
+import ai.storyteller.lightcraft.android.GateRules
 import ai.storyteller.lightcraft.android.LightCraftViewModel
 import ai.storyteller.lightcraft.android.MainTab
 import ai.storyteller.lightcraft.android.MaskInfo
@@ -184,6 +185,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
     val pickObject by vm.pickObject.collectAsStateWithLifecycle()
     val spots by vm.spots.collectAsStateWithLifecycle()
     val crop by vm.crop.collectAsStateWithLifecycle()
+    val zoomed by vm.zoomed.collectAsStateWithLifecycle()
     val generating by vm.generating.collectAsStateWithLifecycle()
     val painting = chosen && ((tab == MainTab.Remove && tool?.kind == ToolKind.Brush && !(tool?.id == "fill" && pickObject)) || (tab == MainTab.Masking && maskBrush))
     val tapping = chosen && (picker != Picker.None || painting || (tab == MainTab.Remove && (tool?.id == "eraser" || tool?.id == "redeye" || tool?.id == "fill")))
@@ -245,7 +247,14 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                 holding -> before ?: preview
                 else -> preview
             }
-            val fit = shown?.let { fitRect(it.width, it.height, area) }
+            // Where the photo sits when it fills the viewport at fit. A re-rendered zoom window has
+            // the viewport's own shape, so measuring it would move `fit` and feed the window
+            // calculation below its own output: the fitted shape is remembered from the fitted
+            // frame and left alone while zoomed.
+            var fitted by remember(photo) { mutableStateOf<Rect?>(null) }
+            val measured = shown?.let { fitRect(it.width, it.height, area) }
+            if (!zoomed && measured != null && measured != fitted) fitted = measured
+            val fit = if (zoomed) fitted else measured
             // a touch at `o` on screen → 0..1 of the shown photo, undoing the zoom and pan
             val toPhoto = { o: Offset ->
                 fit?.let { r ->
@@ -255,6 +264,27 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                 }
             }
             val mapper = androidx.compose.runtime.rememberUpdatedState(toPhoto)
+            // Zooming in asks the engine for those pixels at 1:1 instead of magnifying the fitted
+            // bitmap, so sharpening, noise reduction, grain and chromatic aberration show what they
+            // really do. The geometry is here because `fit`, the zoom and the pan are here.
+            LaunchedEffect(zoom, pan, fit, area, cropping, removing) {
+                val r = fit
+                if (r == null || zoom <= 1f || cropping || removing) {
+                    vm.clearZoomWindow()
+                    return@LaunchedEffect
+                }
+                val c = Offset(area.width / 2f, area.height / 2f)
+                val left = (r.left - c.x) * zoom + c.x + pan.x
+                val top = (r.top - c.y) * zoom + c.y + pan.y
+                val fullW = r.width * zoom
+                val fullH = r.height * zoom
+                // the part of the scaled photo the viewport actually shows
+                val x = (-left).coerceIn(0f, (fullW - 1f).coerceAtLeast(0f))
+                val y = (-top).coerceIn(0f, (fullH - 1f).coerceAtLeast(0f))
+                val w = minOf(area.width.toFloat(), fullW - x)
+                val h = minOf(area.height.toFloat(), fullH - y)
+                if (w < 8f || h < 8f) vm.clearZoomWindow() else vm.setZoomWindow(fullW.toInt(), fullH.toInt(), x.toInt(), y.toInt(), w.toInt(), h.toInt())
+            }
             Box(
                 Modifier
                     .fillMaxSize()
@@ -326,11 +356,15 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                     },
             ) {
                 if (removing && fit != null) Checkerboard(fit)
+                // A re-rendered window already holds the right pixels at the right scale and fills
+                // the viewport, so it must not be scaled again; only a magnified fit-sized frame is.
                 val layer = Modifier.fillMaxSize().graphicsLayer {
-                    scaleX = zoom
-                    scaleY = zoom
-                    translationX = pan.x
-                    translationY = pan.y
+                    if (!zoomed) {
+                        scaleX = zoom
+                        scaleY = zoom
+                        translationX = pan.x
+                        translationY = pan.y
+                    }
                     // straightening: the photo turns under the finger; the render follows on release
                     if (cropping) rotationZ = tilt
                 }
@@ -735,6 +769,12 @@ private fun SliderPanel(vm: LightCraftViewModel, tool: Tool, all: List<Control>)
     val picker by vm.picker.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxWidth()) {
         if (groups.size > 1) Pills(groups.map { it.title }, groups.indexOf(group), { selected = it }, onReset = { vm.resetGroup(group) })
+        // Color Grading is a wheel, not sliders: see GradingWheel.kt for why
+        if (group.title == "Grading") {
+            GradingPanel(vm, all)
+            return@Column
+        }
+        GroupGate(vm, group.title)
         if (group.title == "Color") {
             val on = picker == Picker.WhiteBalance
             Row(
@@ -760,17 +800,52 @@ private fun SliderPanel(vm: LightCraftViewModel, tool: Tool, all: List<Control>)
                 }
             }
         }
+        val gates by vm.gates.collectAsStateWithLifecycle()
+        // sliders the engine would ignore here are dropped; the ones behind a switch are shown
+        // greyed out with the reason, so the panel never looks live while doing nothing
+        val shown = GateRules.visible(controls, gates.bw, gates.hdr, gates.lensProfile)
         LazyColumn(Modifier.fillMaxWidth().heightIn(max = 210.dp), contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 6.dp, bottom = 4.dp)) {
-            items(controls, key = { it.id }) { c ->
-                LrSlider(
-                    c.label, c.value, c.min, c.max, c.default, c.decimals, c.unit,
-                    onChange = { vm.setControl(c.id, it) },
-                    onDone = vm::finishInteraction,
-                    onReset = { vm.resetControl(c.id) },
-                    track = trackFor(c.id),
-                )
+            items(shown, key = { it.id }) { c ->
+                val gate = GateRules.of(c.id, gates.bw, gates.hdr, gates.lensProfile)
+                if (gate != null) {
+                    Text(
+                        "${c.label} — ${gate.reason}",
+                        fontSize = 13.sp,
+                        color = Lc.muted,
+                        modifier = Modifier.padding(vertical = 10.dp),
+                    )
+                } else {
+                    LrSlider(
+                        c.label, c.value, c.min, c.max, c.default, c.decimals, c.unit,
+                        onChange = { vm.setControl(c.id, it) },
+                        onDone = vm::finishInteraction,
+                        onReset = { vm.resetControl(c.id) },
+                        track = trackFor(c.id),
+                    )
+                }
             }
         }
+    }
+}
+
+/**
+ * The switch above a group whose sliders the engine ignores until it is on: B&W for the colour mix,
+ * HDR for the `hdr.*` sliders. Other groups get nothing.
+ */
+@Composable
+private fun GroupGate(vm: LightCraftViewModel, title: String) {
+    val gates by vm.gates.collectAsStateWithLifecycle()
+    val (label, on, set) = when (title) {
+        "B&W" -> Triple("Black & white", gates.bw, vm::setBlackAndWhite)
+        "HDR" -> Triple("HDR editing", gates.hdr, vm::setHdr)
+        else -> return
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(start = 22.dp, end = 16.dp, top = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, fontSize = 14.sp, color = Lc.text, modifier = Modifier.weight(1f))
+        Switch(checked = on, onCheckedChange = set)
     }
 }
 

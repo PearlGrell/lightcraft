@@ -60,6 +60,37 @@ data class Aspect(val label: String, val ratio: Float)
 /** A mask's local adjustment slider (`mask.adjust` value names). */
 data class LocalSlider(val key: String, val label: String, val min: Float, val max: Float, val decimals: Int = 0)
 
+/**
+ * Why a slider cannot do anything yet. The panels are generated from the engine's control list, so
+ * they happily list sliders whose effect is switched off or that need data a phone photo has not
+ * got; without this they look live and do nothing, which is most of what "the features do nothing"
+ * meant. [switchable] groups show a switch; the rest are hidden.
+ */
+data class Gate(val reason: String, val switchable: Boolean)
+
+object GateRules {
+    /**
+     * The gate on a control, given the switches from `develop.get`, or `null` when it is live.
+     *
+     * - B&W mix: `is_bw` must hold, else the eight sliders are dropped from the pipeline.
+     * - HDR: every `hdr.*` slider needs `hdr.enabled`; SDR renders use the SDR rendition.
+     * - Lens profile: needs an embedded profile, which a phone-gallery JPEG does not carry.
+     * - AI denoise: needs a denoised twin of the source, which only a raw with a cached denoise
+     *   product has, so it can never bite on a gallery photo.
+     */
+    fun of(id: String, bw: Boolean, hdr: Boolean, lensProfile: Boolean): Gate? = when {
+        id.startsWith("bw.") && !bw -> Gate("Turn on B&W to mix the colours", switchable = true)
+        id.startsWith("hdr.") && !hdr -> Gate("Turn on HDR to use these", switchable = true)
+        id.startsWith("optics.profile") && !lensProfile -> Gate("This photo has no lens profile", switchable = false)
+        id == "enhance.denoise" -> Gate("AI denoise needs a raw file", switchable = false)
+        else -> null
+    }
+
+    /** The sliders of [controls] worth showing at all: a hidden gate means it can never work here. */
+    fun visible(controls: List<Control>, bw: Boolean, hdr: Boolean, lensProfile: Boolean): List<Control> =
+        controls.filter { of(it.id, bw, hdr, lensProfile)?.switchable != false }
+}
+
 object Tools {
     val edit = listOf(
         Tool("auto", "Auto", ToolKind.Action),

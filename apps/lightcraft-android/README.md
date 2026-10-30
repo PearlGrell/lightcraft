@@ -38,6 +38,20 @@ exports go through the engine's one encoder (`lightcraft_engine::export`).
   Effects, Detail, Optics), **Masking** and **Remove**. Every slider comes from the engine's control
   list (`develop.controls`), grouped by id prefix in `Tools.kt`. Sliders scrub relative to the
   finger, snap to their default with a haptic tick, reset on double-tap; one drag is one undo step.
+- **Nothing pretends to work.** Because the panels are generated from the engine's control list,
+  they used to show sliders the engine ignores. `GateRules` (`Tools.kt`) is the one place that says
+  why a control cannot bite: **B&W** and **HDR** now carry a switch (`develop.treatment`,
+  `develop.hdr`) and their sliders are greyed out with the reason until it is on; the lens-profile
+  and AI-denoise sliders are hidden, because a phone-gallery JPEG can never feed them. A
+  `lightcraft-mobile` test sets every listed control away from its default and fails unless the
+  render changes or the control is listed, with its reason, in that test's `INERT` table.
+- **Color Grading is a wheel** (`ui/GradingWheel.kt`), one per tonal range: the angle is the hue,
+  the distance from the middle the saturation, and one drag sets both in a single undo step. Hue
+  alone is mathematically a no-op (saturation starts at 0 and the engine drops grading while every
+  range is neutral), which is why the slider-only panel felt dead.
+- **Zoom renders what it shows**: past fit, the editor asks the engine for that window of pixels at
+  1:1 (`Mobile::render_region`) instead of magnifying the fitted bitmap, so sharpening, noise
+  reduction, grain, chromatic aberration and defringe are visible at all.
 - **Point tone curve** (`ui/CurveEditor.kt`): RGB, Red, Green and Blue; tap to add a point, drag to
   move it, drag an inner point off the grid to remove it (`develop.curve`).
 - **Crop by hand**: in the Crop tab the preview shows the *whole* photo

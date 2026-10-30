@@ -642,6 +642,95 @@ mod tests {
         assert_eq!(blind["ok"], false, "{blind}");
     }
 
+    /// Controls that cannot move a pixel on their own, each for a reason the phone UI now shows
+    /// instead of offering a live-looking slider. Anything *not* listed here must change the render.
+    const INERT: &[(&str, &str)] = &[
+        // a hue with no saturation is no colour at all: the grading wheel sets both together
+        ("grading.shadows.hue", "needs its saturation"),
+        ("grading.midtones.hue", "needs its saturation"),
+        ("grading.highlights.hue", "needs its saturation"),
+        ("grading.global.hue", "needs its saturation"),
+        ("grading.blending", "only shifts where the ranges meet"),
+        ("grading.balance", "only shifts where the ranges meet"),
+        // the eight B&W mix sliders need the B&W treatment
+        ("bw.red", "needs B&W"),
+        ("bw.orange", "needs B&W"),
+        ("bw.yellow", "needs B&W"),
+        ("bw.green", "needs B&W"),
+        ("bw.aqua", "needs B&W"),
+        ("bw.blue", "needs B&W"),
+        ("bw.purple", "needs B&W"),
+        ("bw.magenta", "needs B&W"),
+        // every hdr.* slider needs HDR editing switched on
+        ("hdr.maxEv", "needs HDR"),
+        ("hdr.sdrBrightness", "needs HDR"),
+        ("hdr.sdrContrast", "needs HDR"),
+        ("hdr.sdrHighlights", "needs HDR"),
+        ("hdr.sdrShadows", "needs HDR"),
+        ("hdr.sdrWhites", "needs HDR"),
+        ("hdr.sdrClarity", "needs HDR"),
+        // these need data a procedural photo (or a phone JPEG) has not got
+        ("optics.profileDistortion", "needs an embedded lens profile"),
+        ("optics.profileVignetting", "needs an embedded lens profile"),
+        ("enhance.denoise", "needs an AI-denoised raw"),
+        // dependants: no effect until their own master is non-zero
+        ("vignette.midpoint", "needs a vignette amount"),
+        ("vignette.roundness", "needs a vignette amount"),
+        ("vignette.feather", "needs a vignette amount"),
+        ("vignette.highlights", "needs a vignette amount"),
+        ("grain.size", "needs a grain amount"),
+        ("grain.roughness", "needs a grain amount"),
+        ("detail.nrDetail", "needs luminance noise reduction"),
+        ("detail.nrContrast", "needs luminance noise reduction"),
+        ("detail.nrColorDetail", "needs colour noise reduction"),
+        ("detail.nrColorSmoothness", "needs colour noise reduction"),
+        ("detail.sharpenRadius", "needs a sharpening amount"),
+        ("detail.sharpenDetail", "needs a sharpening amount"),
+        ("detail.sharpenMasking", "needs a sharpening amount"),
+        ("optics.defringePurpleHueLo", "needs a defringe amount"),
+        ("optics.defringePurpleHueHi", "needs a defringe amount"),
+        ("optics.defringeGreenHueLo", "needs a defringe amount"),
+        ("optics.defringeGreenHueHi", "needs a defringe amount"),
+        ("curve.refineSaturation", "needs a curve"),
+        ("crop.angle", "straightens; tested by the crop tests"),
+    ];
+
+    /// Every slider the phone shows, set away from its default, must change the picture — or be
+    /// listed in [`INERT`] with the reason it cannot. This is the standing answer to "the features
+    /// do nothing": a control that quietly does nothing either gets a gate in the UI or shows up
+    /// here.
+    #[test]
+    fn every_control_the_phone_shows_can_change_the_picture() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        activate(&m, id);
+        let listed = parse(&m.execute("develop.controls", "{}"));
+        let controls = listed["result"].as_array().cloned().unwrap_or_default();
+        assert!(controls.len() > 80, "the engine lists its controls: {}", controls.len());
+
+        // 1:1 so the pixel-scale sliders (sharpening, noise, grain, CA) can show at all
+        let shot = || m.render_region(id, 900, 900, 300, 300, 220, 220, true, false).unwrap().unwrap().rgba;
+        let base = shot();
+        let mut dead = Vec::new();
+        for c in &controls {
+            let Some(cid) = c["id"].as_str() else { continue };
+            let (min, max) = (c["min"].as_f64().unwrap_or(0.0), c["max"].as_f64().unwrap_or(0.0));
+            let default = c["default"].as_f64().unwrap_or(0.0);
+            // the end furthest from the default, so there is the most to see
+            let value = if (max - default).abs() >= (default - min).abs() { max } else { min };
+            let set = parse(&m.execute("develop.set", &json!({"control": cid, "value": value}).to_string()));
+            assert_eq!(set["ok"], true, "setting {cid} to {value}: {set}");
+            let changed = shot() != base;
+            assert_eq!(parse(&m.execute("develop.set", &json!({"control": cid, "value": default}).to_string()))["ok"], true);
+            match (changed, INERT.iter().find(|(k, _)| *k == cid)) {
+                (true, None) | (false, Some(_)) => {}
+                (false, None) => dead.push(format!("{cid} = {value} changed nothing")),
+                (true, Some((_, why))) => dead.push(format!("{cid} works after all; drop it from INERT ({why})")),
+            }
+        }
+        assert!(dead.is_empty(), "{} control(s) disagree with INERT:\n  {}", dead.len(), dead.join("\n  "));
+    }
+
     #[test]
     fn bad_input_is_an_error_answer_not_a_panic() {
         let m = Mobile::demo();
