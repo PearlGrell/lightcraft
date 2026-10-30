@@ -28,10 +28,30 @@ val cargoNdk by tasks.registering(Exec::class) {
     outputs.upToDateWhen { false }
 }
 
+// Inter (assets/fonts, OFL) is the UI font. The build copies it into generated resources so the
+// repository keeps a single copy; its licence ships in the APK's assets.
+val uiFonts = layout.buildDirectory.dir("generated/uiFonts/res")
+val uiLicences = layout.buildDirectory.dir("generated/uiFonts/assets")
+val copyUiFonts by tasks.registering(Copy::class) {
+    group = "build"
+    description = "Copies the Inter UI font from assets/fonts into generated resources"
+    from(workspaceDir.resolve("assets/fonts")) {
+        include("Inter-*.ttf")
+        rename { it.lowercase().replace('-', '_') }
+        into("res/font")
+    }
+    from(workspaceDir.resolve("assets/fonts")) {
+        include("OFL-Inter.txt")
+        into("assets/licences")
+    }
+    into(layout.buildDirectory.dir("generated/uiFonts"))
+}
+
 android {
     namespace = "ai.storyteller.lightcraft.android"
     compileSdk = 35
-    ndkVersion = "27.2.12479018"
+    // `-PndkVersion=…` builds with another installed NDK
+    ndkVersion = findProperty("ndkVersion") as String? ?: "27.2.12479018"
 
     defaultConfig {
         applicationId = "ai.storyteller.lightcraft.android"
@@ -52,6 +72,8 @@ android {
         }
     }
     sourceSets["main"].jniLibs.srcDir(rustJniLibs)
+    sourceSets["main"].res.srcDir(uiFonts)
+    sourceSets["main"].assets.srcDir(uiLicences)
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -60,7 +82,7 @@ android {
     buildFeatures { compose = true }
 }
 
-tasks.named("preBuild") { dependsOn(cargoNdk) }
+tasks.named("preBuild") { dependsOn(cargoNdk, copyUiFonts) }
 
 dependencies {
     implementation(libs.androidx.core.ktx)
@@ -75,6 +97,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     // on-device subject segmentation (opt-in AI masks and background removal), via Play services
     implementation(libs.mlkit.subject.segmentation)
+    // the optional AI models (SAM 2.1 tap-to-select, LaMa generative fill) run on the device
+    implementation(libs.onnxruntime.android)
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)
 }

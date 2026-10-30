@@ -11,17 +11,24 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use lightcraft_engine::catalog::{PhotoId, Source};
 use lightcraft_engine::export::{ExportOptions, export_photo};
-use lightcraft_engine::{EngineError, RenderJob, Session};
+use lightcraft_engine::{EngineError, RenderJob, Session, SourceLevel};
+use lightcraft_geom::Point;
 use serde_json::{Value, json};
 
 pub use lightcraft_bgremove::EraseOptions;
+pub use paint::{Painter, SIDE as PAINT_SIDE};
+
+mod paint;
 
 /// The largest edge a render may ask for (a phone screen is ≤ 4K; exports go through `export.*`).
 pub const MAX_EDGE: usize = 8192;
+
+/// Long edge of the geometry plan [`Mobile::view_to_image`] maps through (only its shape matters).
+const VIEW_PROBE: usize = 1024;
 
 /// A rendered image: `width × height` straight-alpha sRGB pixels, 4 bytes each (RGBA).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +160,17 @@ impl Mobile {
         run(if draft { job.draft() } else { job })
     }
 
+    /// [`Mobile::render`] with mask `mask` tinted red over the photo where it applies (what the
+    /// mask selects), as the desktop's mask overlay shows it.
+    pub fn render_mask(&self, photo: u64, max_w: u32, max_h: u32, mask: u32, draft: bool) -> Result<Frame, String> {
+        let (w, h) = (clamp_edge(max_w)?, clamp_edge(max_h)?);
+        let id = u16::try_from(mask).map_err(|_| format!("no mask {mask}"))?;
+        let job = self.lock().loupe_job(PhotoId(photo), w, h, true).ok_or_else(|| format!("no photo {photo}"))?;
+        let overlay = lightcraft_engine::pipeline::Overlay::Mask { id, view: lightcraft_engine::pipeline::MaskView::Color, color: [255, 59, 48], opacity: 55 };
+        let job = job.with_overlay(overlay);
+        run(if draft { job.draft() } else { job })
+    }
+
     /// A grid thumbnail of `photo` whose long edge is at least `long_edge`.
     pub fn thumbnail(&self, photo: u64, long_edge: u32) -> Result<Frame, String> {
         let edge = clamp_edge(long_edge)?;
@@ -180,6 +198,39 @@ impl Mobile {
 }
 
 impl Mobile {
+    /// Paint Generative spots with `painter` from now on (`None`: content-aware fill again);
+    /// renders made the other way are dropped so they are made again.
+    pub fn set_painter(&self, painter: Option<Box<dyn paint::Painter>>) {
+        let fill = painter.map(|p| Arc::new(paint::PainterFill::new(p)) as Arc<dyn lightcraft_engine::pipeline::spots::GenerativeFill>);
+        lightcraft_engine::pipeline::spots::set_generative_fill(fill);
+        self.lock().media.rendered.clear();
+    }
+
+    /// Where the point `(x, y)` of a render of `photo`, normalized to that render (the cropped,
+    /// straightened, rotated frame the phone shows), lies in the photo: the normalized image
+    /// coordinates that masks, spots and the colour pickers take.
+    pub fn view_to_image(&self, photo: u64, x: f64, y: f64) -> Result<(f64, f64), String> {
+        if !(x.is_finite() && y.is_finite()) {
+            return Err(format!("the point ({x}, {y}) is not finite"));
+        }
+        let mut s = self.lock();
+        let id = PhotoId(photo);
+        if s.catalog.photo(id).is_none() {
+            return Err(format!("no photo {photo}"));
+        }
+        let src = s.source_now(id, SourceLevel::Thumb)?;
+        let info = s.source_info(id);
+        let d = s.develop_of(id).unwrap_or_default();
+        let req = lightcraft_engine::pipeline::RenderRequest::fit(VIEW_PROBE, VIEW_PROBE);
+        let plan = lightcraft_engine::pipeline::plan(&src, &info, &d, &req);
+        let (w, h) = (plan.w as f64, plan.h as f64);
+        let p = plan.frame.out_to_norm(plan.w, plan.h).apply(Point::new(x.clamp(0.0, 1.0) * w, y.clamp(0.0, 1.0) * h));
+        if !(p.x.is_finite() && p.y.is_finite()) {
+            return Err("the photo's geometry has no inverse there".into());
+        }
+        Ok((p.x, p.y))
+    }
+
     /// A mask on the active photo from a segmenter's output (the phone's on-device subject
     /// segmentation): `probs` are `side × side` foreground probabilities over the uncropped photo.
     /// `invert` keeps the rest instead (Background). Returns the engine's answer, as [`Mobile::execute`].
@@ -381,6 +432,70 @@ mod tests {
         assert!(m.render(u64::MAX, 100, 100, false, false).is_err());
         assert!(m.render(m.photos()[0], 0, 100, false, false).is_err());
         assert!(m.thumbnail(m.photos()[0], 0).is_err());
+    }
+
+    #[test]
+    fn view_points_map_through_the_crop() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        // no crop: the view is the photo
+        let (x, y) = m.view_to_image(id, 0.25, 0.5).unwrap();
+        assert!((x - 0.25).abs() < 1e-3 && (y - 0.5).abs() < 1e-3, "({x}, {y})");
+        // the right half: the view's left edge is the photo's middle
+        let r = parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let r = parse(&m.execute("crop.set", &json!({"rect": [0.5, 0.0, 1.0, 1.0]}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let (x, y) = m.view_to_image(id, 0.0, 0.5).unwrap();
+        assert!((x - 0.5).abs() < 1e-3 && (y - 0.5).abs() < 1e-3, "the view's left edge is the photo's middle: ({x}, {y})");
+        let (x, _) = m.view_to_image(id, 1.0, 0.5).unwrap();
+        assert!((x - 1.0).abs() < 1e-3, "{x}");
+        assert!(m.view_to_image(id, f64::NAN, 0.5).is_err());
+        assert!(m.view_to_image(u64::MAX, 0.5, 0.5).is_err());
+    }
+
+    /// The phone's own sequence: it re-selects the open photo before every edit, maps a stroke
+    /// through `view_to_image`, then heals, clones, paints a brush mask and deletes it.
+    #[test]
+    fn the_phones_remove_and_mask_flow_edits_the_photo() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        let select = || parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        let get = || parse(&m.execute("develop.get", "{}"));
+        let pts: Vec<[f64; 2]> = (0..12)
+            .map(|i| {
+                let (x, y) = m.view_to_image(id, 0.3 + f64::from(i) * 0.01, 0.4).unwrap();
+                [x, y]
+            })
+            .collect();
+        let before = m.render(id, 160, 120, false, false).unwrap();
+        for mode in ["heal", "clone", "fill", "generative"] {
+            assert_eq!(select()["ok"], true);
+            let r = parse(&m.execute("spot.add", &json!({"mode": mode, "points": pts, "size": 0.05, "feather": 50.0, "opacity": 100.0}).to_string()));
+            assert_eq!(r["ok"], true, "{mode}: {r}");
+        }
+        assert_eq!(get()["result"]["spots"].as_array().map(Vec::len), Some(4), "{}", get());
+
+        let after = m.render(id, 160, 120, false, false).unwrap();
+        assert_ne!(before.rgba, after.rgba, "three spots should change the render");
+
+        assert_eq!(select()["ok"], true);
+        let r = parse(&m.execute("mask.add", &json!({"kind": "brush", "name": "Brush"}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let masks = get()["result"]["masks"].clone();
+        let mask = masks[0]["id"].as_u64().unwrap();
+        assert_eq!(select()["ok"], true);
+        let r = parse(&m.execute("mask.brushStroke", &json!({"id": mask, "points": pts, "size": 0.05, "feather": 50.0, "erase": false}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        // the overlay tints the painted area red: the render differs from the plain one
+        let plain = m.render(id, 160, 120, false, false).unwrap();
+        let tinted = m.render_mask(id, 160, 120, u32::try_from(mask).unwrap(), false).unwrap();
+        assert_ne!(plain.rgba, tinted.rgba, "the mask overlay should show");
+        assert!(m.render_mask(id, 160, 120, 70_000, false).is_err());
+        assert_eq!(select()["ok"], true);
+        let r = parse(&m.execute("mask.delete", &json!({"id": mask}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(get()["result"]["masks"].as_array().map(Vec::len), Some(0), "{}", get());
     }
 
     #[test]

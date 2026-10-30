@@ -45,10 +45,11 @@ data class Group(val title: String, val prefixes: List<String>, val exclude: Lis
     fun matches(id: String) = prefixes.any { id.startsWith(it) } && exclude.none { id.startsWith(it) }
 }
 
-/** The six tabs of the editor's bottom bar. */
-enum class MainTab(val label: String) { Quick("Quick actions"), Presets("Presets"), Crop("Crop"), Edit("Edit"), Masking("Masking"), Remove("Remove") }
+/** The six tabs of the editor's bottom bar (icon over label). */
+enum class MainTab(val label: String) { Quick("Actions"), Presets("Presets"), Crop("Crop"), Edit("Edit"), Masking("Masking"), Remove("Remove") }
 
-enum class ToolKind { Sliders, Action, Curve }
+/** Brush tools paint on the photo (heal, clone, remove). */
+enum class ToolKind { Sliders, Action, Curve, Brush, Profiles }
 
 /** A labelled tool of the row above the bottom bar. */
 data class Tool(val id: String, val label: String, val kind: ToolKind = ToolKind.Sliders, val groups: List<Group> = emptyList())
@@ -62,7 +63,7 @@ data class LocalSlider(val key: String, val label: String, val min: Float, val m
 object Tools {
     val edit = listOf(
         Tool("auto", "Auto", ToolKind.Action),
-        Tool("light", "Light", groups = listOf(Group("Light", listOf("light.")))),
+        Tool("light", "Light", groups = listOf(Group("Light", listOf("light.")), Group("Tone curve", listOf("curve.")), Group("HDR", listOf("hdr.")))),
         Tool(
             "color", "Color",
             groups = listOf(
@@ -77,8 +78,11 @@ object Tools {
         Tool("effects", "Effects", groups = listOf(Group("Effects", listOf("effects.")), Group("Vignette", listOf("vignette.")), Group("Grain", listOf("grain.")))),
         Tool("detail", "Detail", groups = listOf(Group("Sharpening", listOf("detail.sharpen")), Group("Noise", listOf("enhance.denoise", "detail.nr")))),
         Tool("optics", "Optics", groups = listOf(Group("Lens", listOf("optics.distortion", "optics.vignetting", "optics.profile")), Group("Chromatic", listOf("optics.ca", "optics.defringe")))),
-        Tool("geometry", "Geometry", groups = listOf(Group("Upright", listOf("geometry.")))),
+        Tool("profiles", "Profiles", ToolKind.Profiles),
     )
+
+    /** The Crop tab's Geometry page (Upright and the manual transforms). */
+    val geometry = Group("Geometry", listOf("geometry."))
 
     val quick = listOf(
         Tool("auto", "Auto", ToolKind.Action),
@@ -91,17 +95,24 @@ object Tools {
 
     val masking = listOf(
         Tool("subject", "Subject", ToolKind.Action),
-        Tool("background", "Background", ToolKind.Action),
         Tool("sky", "Sky", ToolKind.Action),
+        Tool("background", "Background", ToolKind.Action),
+        Tool("brush", "Brush", ToolKind.Action),
         Tool("linear", "Linear", ToolKind.Action),
         Tool("radial", "Radial", ToolKind.Action),
+        Tool("colorRange", "Color Range", ToolKind.Action),
+        Tool("luminanceRange", "Luminance", ToolKind.Action),
     )
 
+    /** Remove: three brushes that work on the edit (undoable, any size), then the cutout tools. */
     val remove = listOf(
-        Tool("eraser", "Magic Eraser"),
+        Tool("fill", "Remove", ToolKind.Brush),
+        Tool("heal", "Heal", ToolKind.Brush),
+        Tool("clone", "Clone", ToolKind.Brush),
+        Tool("redeye", "Red Eye"),
+        Tool("eraser", "Eraser"),
         Tool("ai", "Remove BG", ToolKind.Action),
         Tool("keep", "Keep BG", ToolKind.Action),
-        Tool("undo", "Undo", ToolKind.Action),
         Tool("reset", "Restore", ToolKind.Action),
         Tool("export", "Save PNG", ToolKind.Action),
     )
@@ -123,5 +134,5 @@ object Tools {
         LocalSlider("noise", "Noise", -100f, 100f),
     )
 
-    val aspects = listOf(Aspect("Original", 0f), Aspect("1:1", 1f), Aspect("4:5", 4f / 5f), Aspect("3:2", 3f / 2f), Aspect("16:9", 16f / 9f))
+    val aspects = listOf(Aspect("Original", 0f), Aspect("1:1", 1f), Aspect("4:5", 4f / 5f), Aspect("9:16", 9f / 16f), Aspect("3:2", 3f / 2f), Aspect("16:9", 16f / 9f))
 }
