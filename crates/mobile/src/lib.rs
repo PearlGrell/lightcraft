@@ -160,6 +160,55 @@ impl Mobile {
         run(if draft { job.draft() } else { job })
     }
 
+    /// [`Mobile::render`] of the *whole* photo, crop ignored: what the crop tool shows, so a crop
+    /// handle has image to be dragged back out into. The crop frame is drawn over it by the UI.
+    pub fn render_uncropped(&self, photo: u64, max_w: u32, max_h: u32, draft: bool) -> Result<Frame, String> {
+        let (w, h) = (clamp_edge(max_w)?, clamp_edge(max_h)?);
+        let job = self.lock().loupe_job(PhotoId(photo), w, h, false).ok_or_else(|| format!("no photo {photo}"))?;
+        run(if draft { job.draft() } else { job })
+    }
+
+    /// One window of the photo at the scale a `full_w × full_h` frame would have: what a zoomed
+    /// view needs, so the sliders that work on pixels (sharpening, noise, grain, chromatic
+    /// aberration) show what they really do instead of a magnified preview.
+    ///
+    /// Every number here comes from the UI's zoom and pan, so the window is clamped into the frame
+    /// and can only ask for pixels that exist. `Ok(None)`: this window reads more than one render
+    /// can hold — the caller shows the whole frame instead of an error.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_region(
+        &self,
+        photo: u64,
+        full_w: u32,
+        full_h: u32,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        apply_crop: bool,
+        draft: bool,
+    ) -> Result<Option<Frame>, String> {
+        let (fw, fh) = (clamp_edge(full_w)?, clamp_edge(full_h)?);
+        let want = lightcraft_engine::pipeline::PixelWindow {
+            x: usize::try_from(x).unwrap_or(usize::MAX),
+            y: usize::try_from(y).unwrap_or(usize::MAX),
+            w: clamp_edge(w)?,
+            h: clamp_edge(h)?,
+        }
+        .clamped(fw, fh);
+        let job = {
+            let mut s = self.lock();
+            match s.region_job(PhotoId(photo), fw, fh, want, apply_crop) {
+                Some(job) => job,
+                // `region_job` says no when the window reads (spots, Auto Mask strokes) more than
+                // one render can hold; that is a reason to show the whole frame, not an error.
+                None if s.catalog.photo(PhotoId(photo)).is_some() => return Ok(None),
+                None => return Err(format!("no photo {photo}")),
+            }
+        };
+        run(if draft { job.draft() } else { job }).map(Some)
+    }
+
     /// [`Mobile::render`] with mask `mask` tinted red over the photo where it applies (what the
     /// mask selects), as the desktop's mask overlay shows it.
     pub fn render_mask(&self, photo: u64, max_w: u32, max_h: u32, mask: u32, draft: bool) -> Result<Frame, String> {
@@ -422,6 +471,58 @@ mod tests {
         // the before view still shows the unedited look
         let unedited = m.render(id, 160, 120, true, false).unwrap();
         assert_eq!(mean(&unedited), mean(&before));
+    }
+
+    /// Make `id` the active photo, so the `crop.*` / `mask.*` commands have something to act on.
+    fn activate(m: &Mobile, id: u64) {
+        let r = parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+    }
+
+    #[test]
+    fn the_crop_tool_can_render_the_whole_photo() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        activate(&m, id);
+        // a tall crop out of the middle: the cropped render is that shape, the uncropped one is not
+        let r = parse(&m.execute("crop.set", &json!({"rect": [0.4, 0.0, 0.6, 1.0]}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let cropped = m.render(id, 400, 400, false, false).unwrap();
+        let whole = m.render_uncropped(id, 400, 400, false).unwrap();
+        let aspect = |f: &Frame| f.width as f64 / f.height as f64;
+        assert!(aspect(&cropped) < aspect(&whole), "the crop is taller than the photo: {:?} vs {:?}", cropped.width, whole.width);
+        // and it is the photo's own shape, so a handle has image outside the crop to reach into
+        let plain = m.render(id, 400, 400, true, false).unwrap();
+        assert!((aspect(&whole) - aspect(&plain)).abs() < 0.02, "uncropped matches the photo: {} vs {}", aspect(&whole), aspect(&plain));
+    }
+
+    #[test]
+    fn a_region_render_is_the_window_at_full_scale() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        // the middle quarter of a 2x frame: 200x200 of pixels that a 200x200 whole-frame render
+        // would have had to squeeze the whole photo into
+        let window = m.render_region(id, 400, 400, 100, 100, 200, 200, true, false).unwrap();
+        let window = window.expect("the demo photo has no spots, so one render holds the window");
+        assert_eq!((window.width, window.height), (200, 200));
+        assert_eq!(window.rgba.len(), 200 * 200 * 4);
+        // it is not the same pixels as the whole frame scaled down: it is a zoomed-in crop of it
+        let whole = m.render_region(id, 400, 400, 0, 0, 400, 400, true, false).unwrap().unwrap();
+        assert_ne!(window.rgba, whole.rgba[..window.rgba.len()], "the window is a different part of the photo");
+    }
+
+    #[test]
+    fn a_region_window_is_clamped_not_trusted() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        // a stale viewport asking far outside the frame still renders pixels that exist
+        let f = m.render_region(id, 200, 200, 10_000, 10_000, 500, 500, true, false).unwrap().unwrap();
+        assert!(f.width >= 1 && f.height >= 1 && f.rgba.len() == (f.width * f.height * 4) as usize);
+        // and the sizes go through the same gate as every other render
+        assert!(m.render_region(id, 0, 200, 0, 0, 10, 10, true, false).is_err());
+        assert!(m.render_region(u64::MAX, 200, 200, 0, 0, 10, 10, true, false).is_err());
+        assert!(m.render_uncropped(u64::MAX, 100, 100, false).is_err());
+        assert!(m.render_uncropped(id, 0, 100, false).is_err());
     }
 
     #[test]

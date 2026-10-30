@@ -232,6 +232,70 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeRende
     }
 }
 
+/// The whole photo, crop ignored (the crop tool's view): `[width, height, argb…]`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeRenderUncropped<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    max_w: jint,
+    max_h: jint,
+    draft: jboolean,
+) -> jintArray {
+    let r = guarded(|| session(handle)?.render_uncropped(photo_id(photo)?, edge(max_w)?, edge(max_h)?, draft != 0));
+    match r {
+        Ok(f) => int_array(&mut env, &frame_ints(&f)),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// One window of a `full_w × full_h` frame at that scale (a zoomed view): `[width, height, argb…]`,
+/// or an empty array when this window needs more than one render can hold — then the caller shows
+/// the whole frame instead.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeRenderRegion<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    full_w: jint,
+    full_h: jint,
+    x: jint,
+    y: jint,
+    w: jint,
+    h: jint,
+    apply_crop: jboolean,
+    draft: jboolean,
+) -> jintArray {
+    let r = guarded(|| {
+        session(handle)?.render_region(
+            photo_id(photo)?,
+            edge(full_w)?,
+            edge(full_h)?,
+            // a negative pan is simply the frame's origin: clamp here, the engine clamps again
+            x.max(0).unsigned_abs(),
+            y.max(0).unsigned_abs(),
+            edge(w)?,
+            edge(h)?,
+            apply_crop != 0,
+            draft != 0,
+        )
+    });
+    match r {
+        Ok(Some(f)) => int_array(&mut env, &frame_ints(&f)),
+        Ok(None) => int_array(&mut env, &[]),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeThumbnail<'l>(
     mut env: JNIEnv<'l>,

@@ -49,6 +49,20 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
     fun render(photo: Long, maxW: Int, maxH: Int, before: Boolean = false, draft: Boolean = false): Bitmap =
         bitmap(nativeRender(live(), photo, maxW, maxH, before, draft))
 
+    /** [photo] with its edits but **without** its crop, fitted into [maxW]×[maxH]: the crop tool's view. */
+    fun renderUncropped(photo: Long, maxW: Int, maxH: Int, draft: Boolean = false): Bitmap =
+        bitmap(nativeRenderUncropped(live(), photo, maxW, maxH, draft))
+
+    /**
+     * The [w]×[h] window at ([x], [y]) of a [fullW]×[fullH] frame, rendered at that scale: a zoomed
+     * view, so sharpening, noise reduction, grain and chromatic aberration show what they do.
+     *
+     * `null` when this window needs more than one render can hold — show [render]'s frame instead.
+     */
+    @Suppress("LongParameterList")
+    fun renderRegion(photo: Long, fullW: Int, fullH: Int, x: Int, y: Int, w: Int, h: Int, applyCrop: Boolean = true, draft: Boolean = false): Bitmap? =
+        nativeRenderRegion(live(), photo, fullW, fullH, x, y, w, h, applyCrop, draft).takeIf { it.isNotEmpty() }?.let { bitmap(it) }
+
     /** A grid thumbnail whose long edge is at least [longEdge]. */
     fun thumbnail(photo: Long, longEdge: Int): Bitmap = bitmap(nativeThumbnail(live(), photo, longEdge))
 
@@ -120,6 +134,19 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativePhotoForPath(handle: Long, path: String): Long
         @JvmStatic private external fun nativePhotos(handle: Long): LongArray
         @JvmStatic private external fun nativeRender(handle: Long, photo: Long, maxW: Int, maxH: Int, before: Boolean, draft: Boolean): IntArray
+        @JvmStatic private external fun nativeRenderUncropped(handle: Long, photo: Long, maxW: Int, maxH: Int, draft: Boolean): IntArray
+        @JvmStatic private external fun nativeRenderRegion(
+            handle: Long,
+            photo: Long,
+            fullW: Int,
+            fullH: Int,
+            x: Int,
+            y: Int,
+            w: Int,
+            h: Int,
+            applyCrop: Boolean,
+            draft: Boolean,
+        ): IntArray
         @JvmStatic private external fun nativeThumbnail(handle: Long, photo: Long, longEdge: Int): IntArray
         @JvmStatic private external fun nativePresetThumbnail(handle: Long, photo: Long, preset: String, longEdge: Int): IntArray
         @JvmStatic private external fun nativeAddSegMask(handle: Long, name: String, side: Int, probs: FloatArray, invert: Boolean): String
