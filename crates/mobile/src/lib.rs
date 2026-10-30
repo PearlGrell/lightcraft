@@ -525,6 +525,82 @@ mod tests {
         assert!(m.render_uncropped(id, 0, 100, false).is_err());
     }
 
+    /// How red the mask overlay has made the pixel at (`fx`, `fy`) of `f` (0..1 of the frame): the
+    /// tint is `[255, 59, 48]`, so where the mask selects, red runs well ahead of blue.
+    fn tint(f: &Frame, fx: f64, fy: f64) -> i32 {
+        let x = ((fx * f64::from(f.width)) as u32).min(f.width.saturating_sub(1));
+        let y = ((fy * f64::from(f.height)) as u32).min(f.height.saturating_sub(1));
+        let i = ((y * f.width + x) * 4) as usize;
+        match (f.rgba.get(i), f.rgba.get(i + 2)) {
+            (Some(r), Some(b)) => i32::from(*r) - i32::from(*b),
+            _ => 0,
+        }
+    }
+
+    /// An AI-style mask over the whole frame, as `Segmenter` + `add_seg_mask` make one on the phone.
+    fn seg_mask_everywhere(m: &Mobile) -> u32 {
+        let answer = parse(&m.add_seg_mask("Subject", 32, &[0.99_f32; 32 * 32], false));
+        assert_eq!(answer["ok"], true, "{answer}");
+        answer["result"]["activeMask"].as_u64().unwrap_or_default() as u32
+    }
+
+    #[test]
+    fn a_subtract_brush_takes_away_from_an_ai_mask() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        activate(&m, id);
+        let mid = seg_mask_everywhere(&m);
+        let before = m.render_mask(id, 200, 200, mid, false).unwrap();
+        assert!(tint(&before, 0.5, 0.5) > 20, "the AI mask selects the middle: {}", tint(&before, 0.5, 0.5));
+
+        // What the phone's Erase chip now does: a Subtract component, painted *positively*.
+        let r = parse(&m.execute("mask.addComponent", &json!({"id": mid, "kind": "brush", "op": "subtract"}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let stroke = json!({"id": mid, "points": [[0.5, 0.5]], "size": 0.25, "feather": 0.0});
+        let r = parse(&m.execute("mask.brushStroke", &stroke.to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+
+        let after = m.render_mask(id, 200, 200, mid, false).unwrap();
+        assert!(tint(&after, 0.5, 0.5) < tint(&before, 0.5, 0.5) - 20, "the middle is out of the mask: {}", tint(&after, 0.5, 0.5));
+        assert!(tint(&after, 0.04, 0.04) > 20, "an unpainted corner stays selected: {}", tint(&after, 0.04, 0.04));
+    }
+
+    #[test]
+    fn an_erase_stroke_alone_cannot_touch_an_ai_mask() {
+        // Why the Erase chip has to add a Subtract component: the brush's own `erase` only rubs
+        // out paint inside a brush component, and an AI mask has no paint. This pins the engine
+        // behaviour the phone works around, so a change here is noticed.
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        activate(&m, id);
+        let mid = seg_mask_everywhere(&m);
+        let before = m.render_mask(id, 200, 200, mid, false).unwrap();
+        let stroke = json!({"id": mid, "points": [[0.5, 0.5]], "size": 0.25, "feather": 0.0, "erase": true});
+        assert_eq!(parse(&m.execute("mask.brushStroke", &stroke.to_string()))["ok"], true);
+        let after = m.render_mask(id, 200, 200, mid, false).unwrap();
+        assert_eq!(tint(&after, 0.5, 0.5), tint(&before, 0.5, 0.5), "an erase stroke on its own changes nothing");
+    }
+
+    #[test]
+    fn a_colour_range_mask_samples_the_colour_it_is_given() {
+        // The exact sequence the phone's colour picker runs: select the photo (which clears the
+        // engine's mask selection), then sample — which is why it names the mask by id.
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        activate(&m, id);
+        let added = parse(&m.execute("mask.add", &json!({"kind": "colorRange", "name": "Color Range"}).to_string()));
+        assert_eq!(added["ok"], true, "{added}");
+        let mid = added["result"]["activeMask"].as_u64().unwrap_or_default();
+        activate(&m, id);
+        let at = json!({"id": mid, "x": 0.5, "y": 0.5, "add": true});
+        let r = parse(&m.execute("mask.sampleColor", &at.to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["samples"].as_array().map(Vec::len), Some(1), "one colour sampled: {r}");
+        // without the id it has nothing to work on, because `library.select` cleared the selection
+        let blind = parse(&m.execute("mask.sampleColor", &json!({"x": 0.5, "y": 0.5}).to_string()));
+        assert_eq!(blind["ok"], false, "{blind}");
+    }
+
     #[test]
     fn bad_input_is_an_error_answer_not_a_panic() {
         let m = Mobile::demo();

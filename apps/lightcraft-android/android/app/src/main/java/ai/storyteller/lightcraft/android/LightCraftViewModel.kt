@@ -30,13 +30,32 @@ data class Preset(val id: String, val name: String, val group: String, val built
 /** A point of a tone curve, both coordinates 0..1. */
 data class CurvePoint(val x: Float, val y: Float)
 
-/** A mask of the photo (`develop.get` → `masks`) with its local adjustments. */
-data class MaskInfo(val id: Int, val name: String, val adjust: Map<String, Float>) {
+/** One piece of a mask's selection (`develop.get` → `masks[].components`): what it is and how it joins. */
+data class MaskPart(val kind: String, val op: String)
+
+/** A mask of the photo (`develop.get` → `masks`) with its parts and local adjustments. */
+data class MaskInfo(val id: Int, val name: String, val adjust: Map<String, Float>, val parts: List<MaskPart> = emptyList()) {
+    /**
+     * How the brush component a stroke would land in joins the mask, or `null` when the mask has
+     * no paint yet. `mask.brushStroke` always paints into the *last* brush component, whatever its
+     * op, so this is what decides whether a stroke adds to the selection or takes away from it.
+     */
+    val lastBrushOp: String? get() = parts.lastOrNull { it.kind == "brush" }?.op
+
+    /** Whether "Sample color" has anywhere to put a sample. */
+    val hasColorRange: Boolean get() = parts.any { it.kind == "colorRange" }
+
     companion object {
         fun fromJson(o: JSONObject): MaskInfo {
             val a = o.optJSONObject("adjust")
             val adjust = a?.keys()?.asSequence()?.associateWith { a.optDouble(it, 0.0).toFloat() } ?: emptyMap()
-            return MaskInfo(o.optInt("id"), o.optString("name", "Mask"), adjust)
+            val cs = o.optJSONArray("components")
+            val parts = (0 until (cs?.length() ?: 0)).mapNotNull { i ->
+                cs?.optJSONObject(i)?.let { c ->
+                    MaskPart(c.optJSONObject("shape")?.optString("kind").orEmpty(), c.optString("op", "add"))
+                }
+            }
+            return MaskInfo(o.optInt("id"), o.optString("name", "Mask"), adjust, parts)
         }
     }
 }
@@ -150,6 +169,9 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The History step the photo was at when Crop opened: Cancel goes back to it. */
     private var cropStart: Int? = null
+
+    /** The photo the engine was last told to make active, so [activate] does not repeat itself. */
+    @Volatile private var activated: Long? = null
 
     /** Whether Copy Settings has filled the clipboard (Paste Settings is enabled). */
     private val _canPaste = MutableStateFlow(false)
@@ -359,6 +381,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 editingImage = image
                 _editing.value = photo
                 e.execute("library.select", JSONObject().put("ids", JSONArray().put(photo)).put("active", photo))
+                activated = photo
                 loadState()
                 openStep = currentStep
                 sessionTop = currentStep
@@ -391,6 +414,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 withEngine { e ->
                     e.execute("library.select", JSONObject().put("ids", JSONArray().put(photo)).put("active", photo))
+                    activated = photo
                     if (start >= 0) e.execute("history.restore", JSONObject().put("index", start)) else e.execute("develop.reset")
                 }
                 image?.let { refreshThumbnail(it.id) }
@@ -408,6 +432,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         _tool.value = null
         _preview.value = null
         _before.value = null
+        activated = null
         editingImage = null
         if (image != null) {
             if (changed) markEdited(image.id)
@@ -500,10 +525,20 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Make the open photo the engine's active one (edits apply to the active photo). */
+    /**
+     * Make the open photo the engine's active one (edits apply to the active photo), but only when
+     * it is not already. `library.select` also clears the engine's selected mask and spot, so
+     * running it before every command threw away the selection a mask command was about to use.
+     */
     private fun activate(e: Engine) {
         val photo = _editing.value ?: return
+        if (activated == photo) return
         runCatching { e.execute("library.select", JSONObject().put("ids", JSONArray().put(photo)).put("active", photo)) }
+            .onSuccess {
+                activated = photo
+                // it cleared the engine's mask selection: put ours back
+                _activeMask.value?.let { m -> runCatching { e.execute("mask.select", JSONObject().put("id", m)) } }
+            }
     }
 
     private fun begin(e: Engine, label: String) {
@@ -697,25 +732,31 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- masking -------------------------------------------------------------------------------
 
+    /** `mask.add`, selecting the mask it made: the sliders and the brush act on the new mask. */
+    private fun addEngineMask(e: Engine, params: JSONObject) {
+        val answer = e.execute("mask.add", params) as? JSONObject
+        answer?.optInt("activeMask", -1)?.takeIf { it >= 0 }?.let { _activeMask.value = it }
+    }
+
     private fun addMask(kind: String) {
         viewModelScope.launch(commands) {
             when (kind) {
                 "subject" -> subjectMask("Subject", invert = false)
                 "background" -> subjectMask("Background", invert = true)
-                "sky" -> withEngine { e -> e.execute("mask.add", JSONObject().put("kind", "sky").put("name", "Sky")) }
+                "sky" -> withEngine { e -> addEngineMask(e, JSONObject().put("kind", "sky").put("name", "Sky")) }
                 "brush" -> {
-                    withEngine { e -> e.execute("mask.add", JSONObject().put("kind", "brush").put("name", "Brush")) }
+                    withEngine { e -> addEngineMask(e, JSONObject().put("kind", "brush").put("name", "Brush")) }
                     _maskBrush.value = true
                 }
                 "colorRange" -> {
-                    withEngine { e -> e.execute("mask.add", JSONObject().put("kind", "colorRange").put("name", "Color Range")) }
+                    withEngine { e -> addEngineMask(e, JSONObject().put("kind", "colorRange").put("name", "Color Range")) }
                     _picker.value = Picker.MaskColor
                     messages.trySend("Tap the colour to select")
                 }
                 "luminanceRange" -> withEngine { e ->
-                    e.execute("mask.add", JSONObject().put("kind", "luminanceRange").put("name", "Luminance").put("lo", 0.6).put("hi", 1.0))
+                    addEngineMask(e, JSONObject().put("kind", "luminanceRange").put("name", "Luminance").put("lo", 0.6).put("hi", 1.0))
                 }
-                else -> withEngine { e -> e.execute("mask.add", JSONObject().put("kind", kind).put("name", kind.replaceFirstChar { it.uppercase() })) }
+                else -> withEngine { e -> addEngineMask(e, JSONObject().put("kind", kind).put("name", kind.replaceFirstChar { it.uppercase() })) }
             }
             afterEdit()
         }
@@ -729,7 +770,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         return try {
             val source = e.render(photo, 1024, 1024, before = true)
             val probs = Segmenter.subject(source)
-            e.addSegMask(name, Segmenter.SIDE, probs, invert)
+            e.addSegMask(name, Segmenter.SIDE, probs, invert)?.let { _activeMask.value = it }
             true
         } catch (t: Throwable) {
             Log.w(tag, "segmentation", t)
@@ -1083,7 +1124,9 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 val at = JSONObject().put("x", ix.toDouble()).put("y", iy.toDouble())
                 when (which) {
                     Picker.WhiteBalance -> e.execute("develop.wbPick", at)
-                    Picker.MaskColor -> e.execute("mask.sampleColor", at.put("add", true))
+                    // name the mask rather than leaning on the engine's selection, as every other
+                    // mask command here does
+                    Picker.MaskColor -> e.execute("mask.sampleColor", at.put("add", true).put("id", _activeMask.value ?: return@withEngine))
                     Picker.None -> {}
                 }
             }
@@ -1120,8 +1163,19 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                                 .put("feather", b.feather.toDouble()).put("opacity", b.opacity.toDouble()),
                         )
                     } else if (tab == MainTab.Masking) {
-                        val stroke = JSONObject().put("points", pts).put("size", b.size.toDouble()).put("feather", b.feather.toDouble()).put("erase", b.erase)
-                        _activeMask.value?.let { stroke.put("id", it) }
+                        val id = _activeMask.value
+                        // Add and Erase are *selection* operations, as the desktop's ＋/− are
+                        // (ui-egui/src/menus.rs, "brush"): each paints positively into a brush
+                        // component whose op does the adding or the taking away. The stroke's own
+                        // `erase` flag only rubs out paint inside one component, so it cannot touch
+                        // a selection that is not paint — an AI subject, the sky, a gradient.
+                        val want = if (b.erase) "subtract" else "add"
+                        val mask = _masks.value.firstOrNull { it.id == id }
+                        if (id != null && mask != null && mask.lastBrushOp != want) {
+                            e.execute("mask.addComponent", JSONObject().put("id", id).put("kind", "brush").put("op", want))
+                        }
+                        val stroke = JSONObject().put("points", pts).put("size", b.size.toDouble()).put("feather", b.feather.toDouble())
+                        id?.let { stroke.put("id", it) }
                         e.execute("mask.brushStroke", stroke)
                     }
                 }
@@ -1611,6 +1665,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             opened[image.id] = photo
             _editing.value = photo
             e.execute("library.select", JSONObject().put("ids", JSONArray().put(photo)).put("active", photo))
+            activated = photo
             requestRender(draft = false)
         }.isSuccess
     }

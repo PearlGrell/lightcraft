@@ -69,10 +69,14 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
     /** Export [photo] into [dir] with the export dialog's [options]; returns the file written. */
     fun export(photo: Long, options: JSONObject, dir: String): String = nativeExport(live(), photo, options.toString(), dir)
 
-    /** A mask on the active photo from on-device segmentation: [side]×[side] probabilities over the uncropped photo. */
-    fun addSegMask(name: String, side: Int, probs: FloatArray, invert: Boolean) {
+    /**
+     * A mask on the active photo from on-device segmentation: [side]×[side] probabilities over the
+     * uncropped photo. Returns the new mask's id, so the caller can select it.
+     */
+    fun addSegMask(name: String, side: Int, probs: FloatArray, invert: Boolean): Int? {
         val answer = JSONObject(nativeAddSegMask(live(), name, side, probs, invert))
         if (!answer.optBoolean("ok")) throw EngineException(answer.optString("kind", "Other"), answer.optString("error", "mask failed"))
+        return answer.optJSONObject("result")?.optInt("activeMask", -1)?.takeIf { it >= 0 }
     }
 
     /** Paint Generative spots with [painter] (an object with `byte[] paint(byte[], byte[])`), or with none. */

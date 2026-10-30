@@ -135,6 +135,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.storyteller.lightcraft.android.Control
 import ai.storyteller.lightcraft.android.LightCraftViewModel
 import ai.storyteller.lightcraft.android.MainTab
+import ai.storyteller.lightcraft.android.MaskInfo
 import ai.storyteller.lightcraft.android.Picker
 import ai.storyteller.lightcraft.android.SEL
 import ai.storyteller.lightcraft.android.Tool
@@ -828,7 +829,7 @@ private fun MaskPanel(vm: LightCraftViewModel) {
             IconButton(onClick = { vm.maskCommand("mask.invert") }) { Icon(Icons.Outlined.InvertColors, "Invert mask", tint = Lc.label) }
             IconButton(onClick = { vm.maskCommand("mask.delete") }) { Icon(Icons.Outlined.Delete, "Delete mask", tint = Lc.label) }
         }
-        MaskRefineRow(vm)
+        MaskRefineRow(vm, mask)
         if (mask != null) {
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 200.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 4.dp)) {
                 items(Tools.local, key = { it.key }) { s ->
@@ -1078,9 +1079,12 @@ internal fun CropActionBar(onCancel: () -> Unit, onDone: () -> Unit) {
 }
 
 
-/** Under the mask list: paint to add to the mask or erase from it, and sample more colours. */
+/**
+ * Under the mask list: paint to add to the selected mask or erase from it, and — on a colour-range
+ * mask — sample more colours. Add and Erase work on any mask, an AI subject included.
+ */
 @Composable
-private fun MaskRefineRow(vm: LightCraftViewModel) {
+private fun MaskRefineRow(vm: LightCraftViewModel, mask: MaskInfo?) {
     val painting by vm.maskBrush.collectAsStateWithLifecycle()
     val brush by vm.brush.collectAsStateWithLifecycle()
     val picker by vm.picker.collectAsStateWithLifecycle()
@@ -1094,7 +1098,11 @@ private fun MaskRefineRow(vm: LightCraftViewModel) {
                 vm.setBrush(brush.copy(erase = true))
                 vm.setMaskBrush(!(painting && brush.erase))
             }
-            RefineChip("Sample color", Icons.Outlined.Colorize, picker == Picker.MaskColor) { vm.setPicker(Picker.MaskColor) }
+            // only a colour range has somewhere to put a sample; on any other mask the engine
+            // would answer "the mask has no colour range"
+            if (mask?.hasColorRange == true) {
+                RefineChip("Sample color", Icons.Outlined.Colorize, picker == Picker.MaskColor) { vm.setPicker(Picker.MaskColor) }
+            }
         }
         if (painting) {
             Box(Modifier.padding(horizontal = 22.dp)) {
