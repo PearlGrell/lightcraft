@@ -61,6 +61,17 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         if (!answer.optBoolean("ok")) throw EngineException(answer.optString("kind", "Other"), answer.optString("error", "mask failed"))
     }
 
+    /** Paint Generative spots with [painter] (an object with `byte[] paint(byte[], byte[])`), or with none. */
+    fun setPainter(painter: LamaPainter?) = nativeSetPainter(live(), painter)
+
+    /** [photo] rendered like [render], with mask [mask] tinted red over it (what the mask selects). */
+    fun renderMask(photo: Long, maxW: Int, maxH: Int, mask: Int, draft: Boolean = false): Bitmap =
+        bitmap(nativeRenderMask(live(), photo, maxW, maxH, mask, draft))
+
+    /** Where the point ([x], [y]) of the shown render (0..1 of it) lies in [photo], in normalized image coordinates. */
+    fun viewToImage(photo: Long, x: Float, y: Float): Pair<Float, Float> =
+        nativeViewToImage(live(), photo, x.toDouble(), y.toDouble()).let { it[0] to it[1] }
+
     /** [photo] as preset [preset] would leave it, for the presets strip (nothing is applied). */
     fun presetThumbnail(photo: Long, preset: String, longEdge: Int): Bitmap = bitmap(nativePresetThumbnail(live(), photo, preset, longEdge))
 
@@ -120,6 +131,9 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeCutoutFrame(handle: Long): IntArray
         @JvmStatic private external fun nativeCutoutExport(handle: Long, dir: String, name: String, refine: Boolean): String
         @JvmStatic private external fun nativeCutoutEnd(handle: Long)
+        @JvmStatic private external fun nativeRenderMask(handle: Long, photo: Long, maxW: Int, maxH: Int, mask: Int, draft: Boolean): IntArray
+        @JvmStatic private external fun nativeSetPainter(handle: Long, painter: Any?)
+        @JvmStatic private external fun nativeViewToImage(handle: Long, photo: Long, x: Double, y: Double): FloatArray
         @JvmStatic private external fun nativeExport(handle: Long, photo: Long, options: String, dir: String): String
     }
 }

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use jni::JNIEnv;
 use jni::objects::{JClass, JFloatArray, JString};
-use jni::sys::{jboolean, jfloat, jint, jintArray, jlong, jlongArray, jstring};
+use jni::sys::{jboolean, jdouble, jfloat, jfloatArray, jint, jintArray, jlong, jlongArray, jstring};
 use lightcraft_mobile::{Frame, Mobile};
 
 static SESSIONS: Mutex<Vec<Option<Arc<Mobile>>>> = Mutex::new(Vec::new());
@@ -93,6 +93,17 @@ fn int_array(env: &mut JNIEnv, data: &[i32]) -> jintArray {
     let Ok(len) = i32::try_from(data.len()) else { return std::ptr::null_mut() };
     match env.new_int_array(len) {
         Ok(arr) => match env.set_int_array_region(&arr, 0, data) {
+            Ok(()) => arr.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+fn float_array(env: &mut JNIEnv, data: &[f32]) -> jfloatArray {
+    let Ok(len) = i32::try_from(data.len()) else { return std::ptr::null_mut() };
+    match env.new_float_array(len) {
+        Ok(arr) => match env.set_float_array_region(&arr, 0, data) {
             Ok(()) => arr.into_raw(),
             Err(_) => std::ptr::null_mut(),
         },
@@ -470,4 +481,109 @@ mod tests {
     fn error_answers_are_json() {
         assert_eq!(error_json("a \"b\"\n"), r#"{"ok":false,"kind":"Other","error":"a \"b\"\u000a"}"#);
     }
+}
+
+/// The photo with mask `mask` tinted over it, as ARGB ints (see `nativeRender`).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeRenderMask<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    max_w: jint,
+    max_h: jint,
+    mask: jint,
+    draft: jboolean,
+) -> jintArray {
+    let r = guarded(|| {
+        let mask = u32::try_from(mask).map_err(|_| format!("no mask {mask}"))?;
+        session(handle)?.render_mask(photo_id(photo)?, edge(max_w)?, edge(max_h)?, mask, draft != 0)
+    });
+    match r {
+        Ok(f) => int_array(&mut env, &frame_ints(&f)),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// `[x, y]`: where a point of the shown render (normalized to it) lies in the photo, in the
+/// normalized image coordinates masks, spots and pickers take.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeViewToImage<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    x: jdouble,
+    y: jdouble,
+) -> jfloatArray {
+    let r = guarded(|| session(handle)?.view_to_image(photo_id(photo)?, x, y));
+    match r {
+        Ok((ix, iy)) => float_array(&mut env, &[ix as f32, iy as f32]),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// The phone's inpainting model (a Kotlin object with `byte[] paint(byte[] rgb, byte[] hole)`),
+/// called from the render threads: each call attaches its thread to the VM.
+struct JavaPainter {
+    vm: jni::JavaVM,
+    target: jni::objects::GlobalRef,
+}
+
+impl lightcraft_mobile::Painter for JavaPainter {
+    fn paint(&self, rgb: &[u8], hole: &[u8]) -> Result<Vec<u8>, String> {
+        let mut env = self.vm.attach_current_thread().map_err(|e| format!("attach: {e}"))?;
+        let rgb_bytes: Vec<i8> = rgb.iter().map(|v| i8::from_ne_bytes([*v])).collect();
+        let hole_bytes: Vec<i8> = hole.iter().map(|v| i8::from_ne_bytes([*v])).collect();
+        let len = |n: usize| i32::try_from(n).map_err(|_| format!("{n} values is too many"));
+        let a = env.new_byte_array(len(rgb_bytes.len())?).map_err(|e| e.to_string())?;
+        env.set_byte_array_region(&a, 0, &rgb_bytes).map_err(|e| e.to_string())?;
+        let m = env.new_byte_array(len(hole_bytes.len())?).map_err(|e| e.to_string())?;
+        env.set_byte_array_region(&m, 0, &hole_bytes).map_err(|e| e.to_string())?;
+        let answer = env.call_method(&self.target, "paint", "([B[B)[B", &[jni::objects::JValue::Object(&a), jni::objects::JValue::Object(&m)]);
+        let answer = match answer.and_then(|v| v.l()) {
+            Ok(o) => o,
+            Err(e) => {
+                // a Kotlin exception stays pending on this thread unless cleared
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_clear();
+                }
+                return Err(format!("the painter failed: {e}"));
+            }
+        };
+        if answer.is_null() {
+            return Err("the painter declined".into());
+        }
+        env.convert_byte_array(jni::objects::JByteArray::from(answer)).map_err(|e| e.to_string())
+    }
+}
+
+/// Paint Generative spots with `painter` (a Kotlin painter object), or with none (`null`).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeSetPainter<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    painter: jni::objects::JObject<'l>,
+) {
+    let r = (|| -> Result<(), String> {
+        let painter: Option<Box<dyn lightcraft_mobile::Painter>> = if painter.is_null() {
+            None
+        } else {
+            let vm = env.get_java_vm().map_err(|e| e.to_string())?;
+            let target = env.new_global_ref(&painter).map_err(|e| e.to_string())?;
+            Some(Box::new(JavaPainter { vm, target }))
+        };
+        guarded(|| {
+            session(handle)?.set_painter(painter);
+            Ok(())
+        })
+    })();
+    or_throw(&mut env, r)
 }

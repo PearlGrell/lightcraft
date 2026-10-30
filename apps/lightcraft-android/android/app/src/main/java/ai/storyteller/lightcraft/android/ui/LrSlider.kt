@@ -15,6 +15,9 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -43,6 +46,7 @@ fun LrSlider(
     onDone: () -> Unit,
     onReset: () -> Unit,
     modifier: Modifier = Modifier,
+    track: List<Color>? = null,
 ) {
     val haptics = LocalHapticFeedback.current
     val current by rememberUpdatedState(value)
@@ -75,12 +79,18 @@ fun LrSlider(
         Canvas(Modifier.fillMaxWidth().height(26.dp)) {
             val y = size.height / 2f
             val x = { t: Float -> (t.coerceIn(min, max) - min) / range * size.width }
-            drawLine(Lc.track, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.5.dp.toPx())
             val from = x(default)
             val to = x(value)
-            drawLine(Lc.text, Offset(from, y), Offset(to, y), strokeWidth = 2.5.dp.toPx())
-            drawCircle(Lc.thumb, 10.dp.toPx(), Offset(to, y))
-            drawCircle(Lc.text, 10.dp.toPx(), Offset(to, y), style = Stroke(1.8.dp.toPx()))
+            if (track != null && track.size >= 2) {
+                // a colour track (Temp, Tint, Saturation, the HSL mixer): the colours are the guide
+                drawLine(Brush.horizontalGradient(track), Offset(0f, y), Offset(size.width, y), strokeWidth = 3.dp.toPx(), cap = StrokeCap.Round)
+            } else {
+                drawLine(Lc.track, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.5.dp.toPx())
+                drawLine(Lc.text, Offset(from, y), Offset(to, y), strokeWidth = 2.5.dp.toPx())
+            }
+            // a solid white thumb with a soft shadow ring, like Lightroom's
+            drawCircle(Color(0x55000000), 9.5.dp.toPx(), Offset(to, y + 0.8.dp.toPx()))
+            drawCircle(Color.White, 8.dp.toPx(), Offset(to, y))
         }
     }
 }
@@ -88,4 +98,25 @@ fun LrSlider(
 private fun format(v: Float, min: Float, decimals: Int, unit: String): String {
     val text = String.format(Locale.ROOT, "%.${decimals}f", v)
     return (if (min < 0 && v > 0 && unit != "EV") "+$text" else text) + unit
+}
+
+/** Hue (degrees) of each colour band of the HSL mixer and colour grading, by the name in the control id. */
+private val BAND_HUES = listOf("red" to 0f, "orange" to 30f, "yellow" to 55f, "green" to 120f, "aqua" to 180f, "blue" to 220f, "purple" to 275f, "magenta" to 310f)
+
+private fun hsv(h: Float, s: Float = 0.85f, v: Float = 0.9f): Color = Color.hsv(((h % 360f) + 360f) % 360f, s, v)
+
+/** The colour track of a develop control, or null for a plain grey slider. */
+fun trackFor(id: String): List<Color>? {
+    val k = id.lowercase()
+    val band = BAND_HUES.firstOrNull { (name, _) -> k.contains(".$name") || k.contains("${name}.") || k.endsWith(name) }?.second
+    return when {
+        k == "wb.temp" || k.endsWith(".temp") || k.endsWith("temperature") -> listOf(Color(0xFF2F6FE0), Color(0xFFD9D9D9), Color(0xFFE6C23A))
+        k == "wb.tint" || k.endsWith(".tint") -> listOf(Color(0xFF3FBF4F), Color(0xFFD9D9D9), Color(0xFFD445C6))
+        band != null && k.contains("hue") -> listOf(hsv(band - 35f), hsv(band), hsv(band + 35f))
+        band != null && (k.contains("sat") || k.contains("chroma")) -> listOf(Color(0xFF8A8A8A), hsv(band))
+        band != null && (k.contains("lum") || k.contains("light")) -> listOf(Color(0xFF1A1A1A), hsv(band, 0.7f, 0.75f), Color(0xFFF5F5F5))
+        k.endsWith("saturation") || k.endsWith("vibrance") -> listOf(Color(0xFF8A8A8A), Color(0xFFE5484D), Color(0xFFE6C23A), Color(0xFF3FBF4F), Color(0xFF2F6FE0))
+        k.endsWith(".hue") -> listOf(hsv(0f), hsv(60f), hsv(120f), hsv(180f), hsv(240f), hsv(300f), hsv(360f))
+        else -> null
+    }
 }

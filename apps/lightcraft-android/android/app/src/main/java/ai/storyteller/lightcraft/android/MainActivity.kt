@@ -7,6 +7,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -38,21 +40,23 @@ class MainActivity : ComponentActivity() {
                     for (m in vm.messages) snackbar.showSnackbar(m)
                 }
                 LaunchedEffect(Unit) {
-                    for (file in vm.shares) {
-                        val uri = FileProvider.getUriForFile(this@MainActivity, "$packageName.files", file)
-                        val send = Intent(Intent.ACTION_SEND)
-                            .setType("image/jpeg")
-                            .putExtra(Intent.EXTRA_STREAM, uri)
-                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        startActivity(Intent.createChooser(send, "Share photo"))
+                    for (files in vm.shares) {
+                        val uris = files.map { FileProvider.getUriForFile(this@MainActivity, "$packageName.files", it) }
+                        if (uris.isEmpty()) continue
+                        val send = if (uris.size == 1) {
+                            Intent(Intent.ACTION_SEND).setType(ExportFormat.mimeOf(files[0].name)).putExtra(Intent.EXTRA_STREAM, uris[0])
+                        } else {
+                            Intent(Intent.ACTION_SEND_MULTIPLE).setType("image/*").putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                        }
+                        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        startActivity(Intent.createChooser(send, if (uris.size == 1) "Share photo" else "Share ${uris.size} photos"))
                     }
                 }
                 val photo = editing
-                if (photo == null && opening == null) {
-                    LibraryScreen(vm, snackbar)
-                } else {
-                    BackHandler { vm.close() }
-                    EditorScreen(vm, photo ?: -1L, snackbar)
+                val inLibrary = photo == null && opening == null
+                BackHandler(enabled = !inLibrary) { vm.close() }
+                Crossfade(targetState = inLibrary, animationSpec = tween(220), label = "screen") { library ->
+                    if (library) LibraryScreen(vm, snackbar) else EditorScreen(vm, photo ?: -1L, snackbar)
                 }
             }
         }

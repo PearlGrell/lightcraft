@@ -9,6 +9,11 @@
 //!   source: PatchMatch-based completion ([`lightcraft_inpaint::complete`]), coarse to fine, so the
 //!   structure is chosen at a scale set by the spot's size (the same at preview and export size).
 //!   Deterministic; the source offset is ignored.
+//! - **Generative** paints the spot in with an inpainting model that a front end registers with
+//!   [`set_generative_fill`] (the phone's optional LaMa download); with none registered, or when
+//!   the model declines, it renders exactly as Fill. The source offset is ignored.
+
+use std::sync::{Arc, PoisonError, RwLock};
 
 use lightcraft_develop::{Spot, SpotMode};
 use lightcraft_geom::Point;
@@ -189,8 +194,13 @@ pub fn window_for_reads_checked(
             for p in &pts {
                 (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
             }
-            // the box `apply` works in: the stroke plus a radius, plus a radius of padding
-            let t = [x0 - 2.0 * r, y0 - 2.0 * r, x1 + 2.0 * r, y1 + 2.0 * r];
+            // the box `apply` works in: the stroke plus a radius, plus its padding
+            let pad = if spot.mode == SpotMode::Generative {
+                f64::from(generative_pad(r as f32, (x1 - x0 + 2.0 * r) as f32, (y1 - y0 + 2.0 * r) as f32)) + r
+            } else {
+                2.0 * r
+            };
+            let t = [x0 - pad, y0 - pad, x1 + pad, y1 + pad];
             let s = match spot.source_offset {
                 Some(o) => {
                     let b = to_out.apply(o);
@@ -256,6 +266,49 @@ pub fn window_for_reads_checked(
     )
 }
 
+/// Context a Generative spot's model sees around the stroke box (`w × h` output pixels, radius
+/// `r`): at least ¾ of the box's own size on every side, so the hole is at most about a third of
+/// what the network looks at (it paints from what it sees; a hole that fills its view comes out
+/// flat). Content-aware fill keeps its two radii.
+fn generative_pad(r: f32, w: f32, h: f32) -> f32 {
+    (2.0 * r).max(0.75 * w.max(h))
+}
+
+/// An inpainting model for [`SpotMode::Generative`] spots.
+pub trait GenerativeFill: Send + Sync {
+    /// The `w × h` box in scene-linear RGB with every pixel where `hole` is true painted in, or
+    /// `None` to fall back to content-aware fill (no model, a failure, a box it cannot take).
+    fn fill(&self, rgb: &[[f32; 3]], hole: &[bool], w: usize, h: usize) -> Option<Vec<[f32; 3]>>;
+}
+
+static GENERATIVE: RwLock<Option<Arc<dyn GenerativeFill>>> = RwLock::new(None);
+
+/// Install (or, with `None`, remove) the model Generative spots are painted with.
+pub fn set_generative_fill(fill: Option<Arc<dyn GenerativeFill>>) {
+    *GENERATIVE.write().unwrap_or_else(PoisonError::into_inner) = fill;
+}
+
+/// Whether a generative model is installed (Generative spots render as Fill without one).
+pub fn has_generative_fill() -> bool {
+    GENERATIVE.read().unwrap_or_else(PoisonError::into_inner).is_some()
+}
+
+/// Generative fill of the box: the registered model paints the hole; without one, or when it
+/// declines, [`fill_box`].
+fn generative_box(src: &mut [[f32; 3]], tgt: &[[f32; 3]], alpha: &[f32], bw: usize, bh: usize) {
+    let model = GENERATIVE.read().unwrap_or_else(PoisonError::into_inner).clone();
+    if let Some(model) = model {
+        let hole: Vec<bool> = alpha.iter().map(|a| *a > 0.0).collect();
+        if let Some(out) = model.fill(tgt, &hole, bw, bh).filter(|o| o.len() == bw * bh && o.iter().flatten().all(|v| v.is_finite())) {
+            for (d, v) in src.iter_mut().zip(out) {
+                *d = v;
+            }
+            return;
+        }
+    }
+    fill_box(src, tgt, alpha, bw, bh);
+}
+
 /// Content-aware fill of the box: `src` becomes `tgt` with every pixel under the stroke (`alpha > 0`)
 /// rebuilt from the rest of the box. Falls back to a smooth membrane fill when the box holds no whole
 /// patch to copy from.
@@ -288,7 +341,7 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
             })
             .collect();
         let Some(&first) = pts.first() else { continue };
-        let fill = spot.mode == SpotMode::Fill;
+        let fill = matches!(spot.mode, SpotMode::Fill | SpotMode::Generative);
         let offset = match spot.source_offset {
             _ if fill => (0.0, 0.0),
             Some(o) => {
@@ -306,8 +359,13 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
             x1 = x1.max(p.0 + r);
             y1 = y1.max(p.1 + r);
         }
-        // content-aware fill reads the spot's surroundings (the window holds 2 radii around it)
-        let pad = if fill { 2.0 * r } else { r };
+        // content-aware fill reads the spot's surroundings (the window holds 2 radii around it);
+        // a generative model needs much more of them
+        let pad = match spot.mode {
+            SpotMode::Generative => generative_pad(r, x1 - x0, y1 - y0),
+            _ if fill => 2.0 * r,
+            _ => r,
+        };
         let (bx0, by0) = (((x0 - pad).floor().max(0.0)) as usize, ((y0 - pad).floor().max(0.0)) as usize);
         let (bx1, by1) = (((x1 + pad).ceil() as usize).min(w), ((y1 + pad).ceil() as usize).min(h));
         if bx1 <= bx0 || by1 <= by0 {
@@ -330,7 +388,9 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
                 tgt[y * bw + x] = img.get(bx0 + x, by0 + y);
             }
         }
-        if fill {
+        if spot.mode == SpotMode::Generative {
+            generative_box(&mut src, &tgt, &alpha, bw, bh);
+        } else if fill {
             fill_box(&mut src, &tgt, &alpha, bw, bh);
         }
         let heal = matches!(spot.mode, SpotMode::Remove | SpotMode::Heal);
@@ -388,7 +448,7 @@ mod tests {
 
     #[test]
     fn hard_edge_spots_at_zero_opacity_leave_every_pixel_unchanged() {
-        for mode in [SpotMode::Clone, SpotMode::Heal, SpotMode::Remove, SpotMode::Fill] {
+        for mode in [SpotMode::Clone, SpotMode::Heal, SpotMode::Remove, SpotMode::Fill, SpotMode::Generative] {
             for (cx, cy) in [(32.5, 24.5), (0.5, 0.5)] {
                 let original = Rgb32f::from_fn(64, 48, |x, y| [0.2 + x as f32 / 128.0, 0.3 + y as f32 / 128.0, 0.4]);
                 let mut img = original.clone();
@@ -626,5 +686,71 @@ mod tests {
         // a spot that doesn't touch the window is no business of it, however far it reads
         let elsewhere = with_spots(vec![spot_at(0.9, 0.9, 0.01, Some(Point::new(-0.8, 0.0)))]);
         assert_eq!(window_for_reads_checked(&elsewhere, &frame, 40_000, 30_000, ppl, win), Some(win));
+    }
+
+    /// A stand-in model: paints the hole a flat colour (or misbehaves, to test the fallback).
+    struct Paint(Option<[f32; 3]>, bool);
+    impl GenerativeFill for Paint {
+        fn fill(&self, rgb: &[[f32; 3]], hole: &[bool], w: usize, h: usize) -> Option<Vec<[f32; 3]>> {
+            let c = self.0?;
+            if self.1 {
+                return Some(vec![[f32::NAN; 3]; w * h]);
+            }
+            Some(rgb.iter().zip(hole).map(|(p, h)| if *h { c } else { *p }).collect())
+        }
+    }
+
+    /// Tests that set the global model slot take this, so they don't race.
+    static MODEL_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn generative_spots_use_the_model_and_fall_back_to_fill() {
+        let _guard = MODEL_SLOT.lock().unwrap_or_else(PoisonError::into_inner);
+        let frame = Frame::new(64, 64, &DevelopSettings::default(), true);
+        let spot = Spot { mode: SpotMode::Generative, points: vec![Point::new(0.5, 0.5)], size: 0.08, feather: 0.0, ..Default::default() };
+        let render = |model: Option<Arc<dyn GenerativeFill>>| {
+            set_generative_fill(model);
+            let mut img = striped_with_blot(64, 64, 8);
+            apply(&mut img, std::slice::from_ref(&spot), &frame, 64.0);
+            img
+        };
+        // no model: exactly content-aware fill
+        let mut fill = striped_with_blot(64, 64, 8);
+        apply(&mut fill, &[Spot { mode: SpotMode::Fill, ..spot.clone() }], &frame, 64.0);
+        assert_eq!(render(None).data, fill.data);
+        assert!(!has_generative_fill());
+        // a model paints the centre
+        let painted = render(Some(Arc::new(Paint(Some([0.0, 0.9, 0.0]), false))));
+        assert!(has_generative_fill());
+        let c = painted.get(32, 32);
+        assert!(c[1] > 0.8 && c[0] < 0.1, "{c:?}");
+        // a model that declines or returns garbage: content-aware fill again
+        assert_eq!(render(Some(Arc::new(Paint(None, false)))).data, fill.data);
+        assert_eq!(render(Some(Arc::new(Paint(Some([1.0; 3]), true)))).data, fill.data);
+        set_generative_fill(None);
+    }
+
+    /// Records the box the model is given.
+    struct Seen(std::sync::Mutex<Option<(usize, usize, usize)>>);
+    impl GenerativeFill for Seen {
+        fn fill(&self, rgb: &[[f32; 3]], hole: &[bool], w: usize, h: usize) -> Option<Vec<[f32; 3]>> {
+            *self.0.lock().unwrap() = Some((w, h, hole.iter().filter(|x| **x).count()));
+            Some(rgb.to_vec())
+        }
+    }
+
+    #[test]
+    fn a_generative_spot_shows_the_model_its_surroundings() {
+        let frame = Frame::new(400, 400, &DevelopSettings::default(), true);
+        let spot = Spot { mode: SpotMode::Generative, points: vec![Point::new(0.5, 0.5)], size: 0.03, feather: 0.0, ..Default::default() };
+        let seen = Arc::new(Seen(std::sync::Mutex::new(None)));
+        // the other generative test owns the slot; this one only reads what the model saw
+        let _guard = MODEL_SLOT.lock().unwrap_or_else(PoisonError::into_inner);
+        set_generative_fill(Some(seen.clone()));
+        let mut img = striped_with_blot(400, 400, 8);
+        apply(&mut img, &[spot], &frame, 400.0);
+        set_generative_fill(None);
+        let (w, h, hole) = seen.0.lock().unwrap().expect("the model ran");
+        assert!(hole * 6 < w * h, "the hole is a small part of what the model sees: {hole} of {w} × {h}");
     }
 }
