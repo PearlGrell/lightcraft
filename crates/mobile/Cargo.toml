@@ -8,6 +8,11 @@ description = "LightCraft for phones (L5): a thread-safe handle over the engine 
 [lints]
 workspace = true
 
+[features]
+# AI masks with SAM 3 (Object and Describe). The model itself is an optional 3.4 GB download the
+# app offers; without it every other feature works.
+sam = ["lightcraft-engine/sam"]
+
 [dependencies]
 lightcraft-engine = { workspace = true }
 lightcraft-raster = { workspace = true }

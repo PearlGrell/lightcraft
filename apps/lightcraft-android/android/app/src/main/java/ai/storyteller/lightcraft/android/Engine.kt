@@ -13,6 +13,31 @@ data class EraseSettings(
     val opacity: Float = 100f,
 )
 
+/** A photo's tone distribution: 256 bins per channel and the share of clipped pixels (0..1). */
+class Histogram(val r: IntArray, val g: IntArray, val b: IntArray, val luma: IntArray, val shadowsClipped: Float, val highlightsClipped: Float) {
+    companion object {
+        fun of(v: IntArray): Histogram {
+            require(v.size == 4 * 256 + 2) { "bad histogram (${v.size} values)" }
+            return Histogram(
+                v.copyOfRange(0, 256), v.copyOfRange(256, 512), v.copyOfRange(512, 768), v.copyOfRange(768, 1024),
+                v[1024] / 1000f, v[1025] / 1000f,
+            )
+        }
+    }
+}
+
+/** What the library knows about a gallery file: its photo id, rating, flag and whether it has edits. */
+data class Mark(val path: String, val id: Long, val rating: Int, val flag: String, val edited: Boolean) {
+    val favourite: Boolean get() = flag == "pick"
+
+    companion object {
+        fun fromJson(o: org.json.JSONObject): Mark? {
+            val path = o.optString("path").takeIf { it.isNotEmpty() } ?: return null
+            return Mark(path, o.optLong("id"), o.optInt("rating"), o.optString("flag", "none"), o.optBoolean("edited"))
+        }
+    }
+}
+
 /** An engine command failed; [kind] is the engine's error kind (`BadParams`, `UnknownCommand`…). */
 class EngineException(val kind: String, message: String) : Exception(message)
 
@@ -75,6 +100,22 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
     fun cutoutExport(dir: String, name: String, refine: Boolean): String = nativeCutoutExport(live(), dir, name, refine)
     fun cutoutEnd() = nativeCutoutEnd(live())
 
+    /** The tone histogram of [photo] with its edits, from a fast render at [longEdge]. */
+    fun histogram(photo: Long, longEdge: Int = 256): Histogram = Histogram.of(nativeHistogram(live(), photo, longEdge))
+
+    /** Edited / flag / rating of every gallery file the library knows, by path. */
+    fun galleryMarks(): Map<String, Mark> {
+        val arr = runCatching { org.json.JSONArray(nativeGalleryMarks(live())) }.getOrNull() ?: return emptyMap()
+        return (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(Mark::fromJson) }.associateBy { it.path }
+    }
+
+    /** Gallery files that were deleted: drop their photos and edits from the library. */
+    fun forgetPaths(paths: List<String>): Int =
+        if (paths.isEmpty()) 0 else nativeForgetPaths(live(), paths.filter { '\n' !in it }.joinToString("\n"))
+
+    /** Where downloaded AI models (SAM 3) live. */
+    fun setModelsDir(dir: String) = nativeSetModelsDir(live(), dir)
+
     override fun close() {
         if (handle != 0L) nativeRelease(handle)
         handle = 0L
@@ -120,6 +161,14 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeCutoutFrame(handle: Long): IntArray
         @JvmStatic private external fun nativeCutoutExport(handle: Long, dir: String, name: String, refine: Boolean): String
         @JvmStatic private external fun nativeCutoutEnd(handle: Long)
+        /** Whether this build includes AI masks (SAM 3 Object and Describe). */
+        val aiMasksAvailable: Boolean get() = runCatching { nativeAiMasksAvailable() }.getOrDefault(false)
+
+        @JvmStatic private external fun nativeHistogram(handle: Long, photo: Long, longEdge: Int): IntArray
+        @JvmStatic private external fun nativeGalleryMarks(handle: Long): String
+        @JvmStatic private external fun nativeForgetPaths(handle: Long, paths: String): Int
+        @JvmStatic private external fun nativeSetModelsDir(handle: Long, dir: String)
+        @JvmStatic private external fun nativeAiMasksAvailable(): Boolean
         @JvmStatic private external fun nativeExport(handle: Long, photo: Long, options: String, dir: String): String
     }
 }

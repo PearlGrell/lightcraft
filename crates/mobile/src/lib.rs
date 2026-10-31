@@ -411,6 +411,19 @@ impl Mobile {
         Value::Array(marks).to_string()
     }
 
+    /// Keep downloaded AI models (SAM 3) under `dir`, the app's private files folder. Commands then
+    /// wait for their AI results instead of queueing them (the app runs commands off its UI thread).
+    pub fn set_models_dir(&self, dir: &str) {
+        let mut s = self.lock();
+        s.segmenter.dir = Some(std::path::Path::new(dir).join("sam3"));
+        s.segmenter.background = false;
+    }
+
+    /// Whether this build can run AI masks (Object and Describe) at all.
+    pub fn ai_masks_available() -> bool {
+        lightcraft_engine::segment::Segmenter::AVAILABLE
+    }
+
     /// The gallery files at `paths` were deleted from the phone: drop their photos (and edits) from
     /// the library. Paths the library doesn't know are ignored. Returns how many photos went.
     pub fn forget_paths(&self, paths: &[String]) -> Result<usize, String> {
@@ -597,6 +610,21 @@ mod tests {
         assert_eq!(m.photos(), vec![ib]);
         assert_eq!(m.forget_paths(&[]).unwrap(), 0);
         assert_eq!(parse(&m.gallery_marks()).as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ai_masks_without_the_model_are_an_error_not_a_panic() {
+        let dir = std::env::temp_dir().join(format!("lightcraft-mobile-sam-{}", std::process::id()));
+        let m = Mobile::demo();
+        m.set_models_dir(dir.to_str().unwrap());
+        let id = m.photos()[0];
+        parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        let r = parse(&m.execute("mask.add", r#"{"kind":"object","points":[[0.5,0.5]]}"#));
+        assert_eq!(r["ok"], false, "{r}");
+        let st = parse(&m.execute("segment.model.status", ""));
+        assert_eq!(st["ok"], true, "{st}");
+        let _ = Mobile::ai_masks_available();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

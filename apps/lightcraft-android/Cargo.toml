@@ -11,6 +11,7 @@ name = "lightcraft_android"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-lightcraft-mobile = { workspace = true }
+# SAM 3 AI masks: the model is an optional download the app offers on phones with enough memory
+lightcraft-mobile = { workspace = true, features = ["sam"] }
 # pure-Rust JNI bindings (MIT OR Apache-2.0); the JVM is the phone's, nothing native is built
 jni = { version = "0.21.1", default-features = false }
