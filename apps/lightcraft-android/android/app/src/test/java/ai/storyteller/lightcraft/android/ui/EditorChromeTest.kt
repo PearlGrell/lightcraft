@@ -75,9 +75,9 @@ class EditorChromeTest {
             Column(Modifier.fillMaxWidth().background(Lc.chrome)) {
                 panel()
                 when (tab) {
-                    MainTab.Edit -> ToolRow(Tools.edit, Tools.edit[1], true) {}
-                    MainTab.Masking -> ToolRow(Tools.masking, null, false) {}
-                    MainTab.Remove -> ToolRow(Tools.remove, Tools.remove[0], false) {}
+                    MainTab.Edit -> ToolRow(Tools.edit, MainTab.Edit, Tools.edit[1], true) {}
+                    MainTab.Masking -> ToolRow(Tools.masking(ai = true), MainTab.Masking, null, false) {}
+                    MainTab.Remove -> ToolRow(Tools.remove, MainTab.Remove, Tools.remove[0], false) {}
                     else -> {}
                 }
                 Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF2E2E2E)))
@@ -90,10 +90,21 @@ class EditorChromeTest {
     fun light() = paparazzi.snapshot {
         LightCraftTheme {
             Editor(MainTab.Edit, {
-                Column(Modifier.padding(horizontal = 22.dp, vertical = 6.dp)) {
-                    LrSlider("Exposure", 0.2f, -5f, 5f, 0f, 2, "EV", {}, {}, {})
-                    LrSlider("Contrast", 37f, -100f, 100f, 0f, 0, "", {}, {}, {})
-                    LrSlider("Highlights", -84f, -100f, 100f, 0f, 0, "", {}, {}, {})
+                Column {
+                    Pills(listOf("Light", "Profile", "HDR"), 0, {}, onReset = {})
+                    DialGrid(
+                        listOf(
+                            DialSpec("light.exposure", "Exposure", 0.2f, -5f, 5f, 0f, 2, "EV"),
+                            DialSpec("light.contrast", "Contrast", 37f, -100f, 100f, 0f),
+                            DialSpec("light.highlights", "Highlights", -84f, -100f, 100f, 0f),
+                            DialSpec("light.shadows", "Shadows", 0f, -100f, 100f, 0f),
+                            DialSpec("light.whites", "Whites", 12f, -100f, 100f, 0f),
+                            DialSpec("light.blacks", "Blacks", -6f, -100f, 100f, 0f),
+                        ),
+                        selected = "light.contrast",
+                        onSelect = {},
+                        actions = DialActions({ _, _ -> }, {}, {}),
+                    )
                 }
             }, compare = true)
         }
@@ -105,6 +116,15 @@ class EditorChromeTest {
             Editor(MainTab.Edit, {
                 CurveEditor(mapOf("master" to listOf(CurvePoint(0f, 0.05f), CurvePoint(0.3f, 0.22f), CurvePoint(0.7f, 0.8f), CurvePoint(1f, 1f))), { _, _ -> }, {}, {})
             })
+        }
+    }
+
+    @Test
+    fun histogram() = paparazzi.snapshot {
+        LightCraftTheme {
+            val bins = IntArray(256) { i -> (2000 * kotlin.math.exp(-((i - 120) * (i - 120)) / 1800.0)).toInt() + 40 }
+            val h = ai.storyteller.lightcraft.android.Histogram(bins, bins.reversedArray(), bins, bins, 0.002f, 0.031f)
+            Box(Modifier.background(Lc.canvas).padding(16.dp)) { HistogramView(h, { _, _ -> }, {}) }
         }
     }
 

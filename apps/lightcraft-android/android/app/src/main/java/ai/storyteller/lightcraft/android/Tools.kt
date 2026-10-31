@@ -41,14 +41,14 @@ data class Control(
  * [prefixes] and none of [exclude], in the engine's order. Driven by the engine's control list, so
  * every slider the engine has shows up without a second list to keep in sync.
  */
-data class Group(val title: String, val prefixes: List<String>, val exclude: List<String> = emptyList()) {
+data class Group(val title: String, val prefixes: List<String>, val exclude: List<String> = emptyList(), val columns: Int = 4) {
     fun matches(id: String) = prefixes.any { id.startsWith(it) } && exclude.none { id.startsWith(it) }
 }
 
 /** The six tabs of the editor's bottom bar. */
 enum class MainTab(val label: String) { Quick("Quick actions"), Presets("Presets"), Crop("Crop"), Edit("Edit"), Masking("Masking"), Remove("Remove") }
 
-enum class ToolKind { Sliders, Action, Curve }
+enum class ToolKind { Sliders, Action, Curve, Brush, Object, Describe }
 
 /** A labelled tool of the row above the bottom bar. */
 data class Tool(val id: String, val label: String, val kind: ToolKind = ToolKind.Sliders, val groups: List<Group> = emptyList())
@@ -62,22 +62,29 @@ data class LocalSlider(val key: String, val label: String, val min: Float, val m
 object Tools {
     val edit = listOf(
         Tool("auto", "Auto", ToolKind.Action),
-        Tool("light", "Light", groups = listOf(Group("Light", listOf("light.")))),
+        Tool(
+            "light", "Light",
+            groups = listOf(
+                Group("Light", listOf("light.")),
+                Group("Profile", listOf("profile.")),
+                Group("HDR", listOf("hdr.")),
+            ),
+        ),
         Tool(
             "color", "Color",
             groups = listOf(
                 Group("Color", listOf("wb.", "color.")),
-                Group("Mix", listOf("mixer.")),
-                Group("Grading", listOf("grading.")),
+                Group("Mix", listOf("mixer."), columns = 3),
+                Group("Grading", listOf("grading."), columns = 3),
                 Group("B&W", listOf("bw.")),
                 Group("Calibration", listOf("calibration.")),
             ),
         ),
-        Tool("curve", "Curve", ToolKind.Curve),
+        Tool("curve", "Curve", ToolKind.Curve, groups = listOf(Group("Parametric", listOf("curve.")))),
         Tool("effects", "Effects", groups = listOf(Group("Effects", listOf("effects.")), Group("Vignette", listOf("vignette.")), Group("Grain", listOf("grain.")))),
         Tool("detail", "Detail", groups = listOf(Group("Sharpening", listOf("detail.sharpen")), Group("Noise", listOf("enhance.denoise", "detail.nr")))),
         Tool("optics", "Optics", groups = listOf(Group("Lens", listOf("optics.distortion", "optics.vignetting", "optics.profile")), Group("Chromatic", listOf("optics.ca", "optics.defringe")))),
-        Tool("geometry", "Geometry", groups = listOf(Group("Upright", listOf("geometry.")))),
+        Tool("geometry", "Geometry", groups = listOf(Group("Transform", listOf("geometry.")))),
     )
 
     val quick = listOf(
@@ -89,10 +96,16 @@ object Tools {
         Tool("reset", "Reset", ToolKind.Action),
     )
 
-    val masking = listOf(
+    /** The Masking row; Object and Describe (SAM 3) only when the build has AI masks. */
+    fun masking(ai: Boolean) = listOfNotNull(
         Tool("subject", "Subject", ToolKind.Action),
         Tool("background", "Background", ToolKind.Action),
         Tool("sky", "Sky", ToolKind.Action),
+        if (ai) Tool("object", "Object", ToolKind.Object) else null,
+        if (ai) Tool("describe", "Describe", ToolKind.Describe) else null,
+        Tool("brush", "Brush", ToolKind.Brush),
+        Tool("dodge", "Dodge", ToolKind.Brush),
+        Tool("burn", "Burn", ToolKind.Brush),
         Tool("linear", "Linear", ToolKind.Action),
         Tool("radial", "Radial", ToolKind.Action),
     )
@@ -121,6 +134,13 @@ object Tools {
         LocalSlider("dehaze", "Dehaze", -100f, 100f),
         LocalSlider("sharpness", "Sharpness", -100f, 100f),
         LocalSlider("noise", "Noise", -100f, 100f),
+    )
+
+    /** Brush settings: size is a fraction of the long edge, feather and flow percent. */
+    val brush = listOf(
+        LocalSlider("size", "Size", 0.005f, 0.25f, 3),
+        LocalSlider("feather", "Feather", 0f, 100f),
+        LocalSlider("flow", "Flow", 1f, 100f),
     )
 
     val aspects = listOf(Aspect("Original", 0f), Aspect("1:1", 1f), Aspect("4:5", 4f / 5f), Aspect("3:2", 3f / 2f), Aspect("16:9", 16f / 9f))
