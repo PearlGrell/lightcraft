@@ -12,6 +12,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.core.content.FileProvider
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.storyteller.lightcraft.android.ui.EditorScreen
 import ai.storyteller.lightcraft.android.ui.LibraryScreen
@@ -27,6 +28,11 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // the lynx on espresso until the engine has opened the library (at most ~1.5 s)
+        val started = System.nanoTime()
+        installSplashScreen().setKeepOnScreenCondition {
+            !vm.ready.value && System.nanoTime() - started < 1_500_000_000L
+        }
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         setContent {

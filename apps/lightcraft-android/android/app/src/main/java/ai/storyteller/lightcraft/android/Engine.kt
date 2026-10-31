@@ -113,6 +113,10 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
     fun forgetPaths(paths: List<String>): Int =
         if (paths.isEmpty()) 0 else nativeForgetPaths(live(), paths.filter { '\n' !in it }.joinToString("\n"))
 
+    /** A point of the shown photo ([u], [v] 0..1 over the rendered frame) → the uncropped photo's normalized point. */
+    fun viewToImage(photo: Long, u: Float, v: Float): Pair<Float, Float>? =
+        nativeViewToImage(live(), photo, u, v)?.takeIf { it.size == 2 }?.let { it[0] to it[1] }
+
     /** Where downloaded AI models (SAM 3) live. */
     fun setModelsDir(dir: String) = nativeSetModelsDir(live(), dir)
 
@@ -167,6 +171,7 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeHistogram(handle: Long, photo: Long, longEdge: Int): IntArray
         @JvmStatic private external fun nativeGalleryMarks(handle: Long): String
         @JvmStatic private external fun nativeForgetPaths(handle: Long, paths: String): Int
+        @JvmStatic private external fun nativeViewToImage(handle: Long, photo: Long, u: Float, v: Float): FloatArray?
         @JvmStatic private external fun nativeSetModelsDir(handle: Long, dir: String)
         @JvmStatic private external fun nativeAiMasksAvailable(): Boolean
         @JvmStatic private external fun nativeExport(handle: Long, photo: Long, options: String, dir: String): String

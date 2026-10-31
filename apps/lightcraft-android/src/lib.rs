@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use jni::JNIEnv;
 use jni::objects::{JClass, JFloatArray, JString};
-use jni::sys::{jboolean, jfloat, jint, jintArray, jlong, jlongArray, jstring};
+use jni::sys::{jboolean, jfloat, jfloatArray, jint, jintArray, jlong, jlongArray, jstring};
 use lightcraft_mobile::{Frame, Mobile};
 
 static SESSIONS: Mutex<Vec<Option<Arc<Mobile>>>> = Mutex::new(Vec::new());
@@ -500,6 +500,29 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeForge
 
 fn split_lines(s: &str) -> Vec<String> {
     s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+}
+
+/// A point of the shown (cropped, rotated) photo → the uncropped photo's normalized point, as
+/// `[x, y]`; an empty array when it maps nowhere.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeViewToImage<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    u: jfloat,
+    v: jfloat,
+) -> jfloatArray {
+    let p = guarded(|| Ok(session(handle)?.view_to_image(photo_id(photo)?, u, v))).ok().flatten();
+    let data: Vec<f32> = p.map(|(x, y)| vec![x, y]).unwrap_or_default();
+    let Ok(len) = i32::try_from(data.len()) else { return std::ptr::null_mut() };
+    match env.new_float_array(len) {
+        Ok(arr) => match env.set_float_array_region(&arr, 0, &data) {
+            Ok(()) => arr.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
 /// Keep AI models (SAM 3) under `dir`.

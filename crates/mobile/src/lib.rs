@@ -411,6 +411,29 @@ impl Mobile {
         Value::Array(marks).to_string()
     }
 
+    /// A point of the photo as the editor shows it (`u`, `v`: 0..1 across the rendered, cropped and
+    /// rotated frame) → the normalized point of the uncropped photo that masks, brush strokes and
+    /// Object clicks use. `None` for a photo the library lacks or a point that maps nowhere.
+    pub fn view_to_image(&self, photo: u64, u: f32, v: f32) -> Option<(f32, f32)> {
+        if !u.is_finite() || !v.is_finite() {
+            return None;
+        }
+        let s = self.lock();
+        let p = s.catalog.photo(PhotoId(photo))?;
+        let frame = lightcraft_engine::pipeline::geometry::Frame::with_lens(
+            p.width.max(1) as usize,
+            p.height.max(1) as usize,
+            &p.develop,
+            true,
+            p.embedded_lens.as_ref(),
+        );
+        let (w, h) = frame.native_size();
+        let px = |x: f64| if x.is_finite() { x.round().clamp(1.0, 1e9) as usize } else { 1 };
+        let (w, h) = (px(w), px(h));
+        let q = frame.out_to_norm(w, h).apply(lightcraft_geom::Point::new(f64::from(u) * w as f64, f64::from(v) * h as f64));
+        (q.x.is_finite() && q.y.is_finite()).then_some((q.x as f32, q.y as f32))
+    }
+
     /// Keep downloaded AI models (SAM 3) under `dir`, the app's private files folder. Commands then
     /// wait for their AI results instead of queueing them (the app runs commands off its UI thread).
     pub fn set_models_dir(&self, dir: &str) {
@@ -611,6 +634,20 @@ mod tests {
         assert_eq!(m.forget_paths(&[]).unwrap(), 0);
         assert_eq!(parse(&m.gallery_marks()).as_array().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn view_points_map_to_the_uncropped_photo() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        let (x, y) = m.view_to_image(id, 0.5, 0.5).unwrap();
+        assert!((x - 0.5).abs() < 1e-3 && (y - 0.5).abs() < 1e-3, "{x} {y}");
+        parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        assert_eq!(parse(&m.execute("crop.set", r#"{"rect":[0.5,0.5,1.0,1.0]}"#))["ok"], true);
+        let (x, y) = m.view_to_image(id, 0.0, 0.0).unwrap();
+        assert!((x - 0.5).abs() < 1e-3 && (y - 0.5).abs() < 1e-3, "the cropped view starts mid-photo: {x} {y}");
+        assert!(m.view_to_image(id, f32::NAN, 0.5).is_none());
+        assert!(m.view_to_image(999_999, 0.5, 0.5).is_none());
     }
 
     #[test]

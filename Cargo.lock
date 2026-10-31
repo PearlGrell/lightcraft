@@ -3585,7 +3585,7 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-android"
-version = "0.8.0"
+version = "0.16.0"
 dependencies = [
  "jni 0.21.1",
  "lightcraft-mobile",
@@ -3593,7 +3593,7 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-bgremove"
-version = "0.8.0"
+version = "0.16.0"
 
 [[package]]
 name = "lightcraft-catalog"
@@ -3891,11 +3891,12 @@ dependencies = [
 
 [[package]]
 name = "lightcraft-mobile"
-version = "0.8.0"
+version = "0.16.0"
 dependencies = [
  "lightcraft-bgremove",
  "lightcraft-codecs",
  "lightcraft-engine",
+ "lightcraft-geom",
  "lightcraft-raster",
  "log",
  "serde_json",
@@ -5939,7 +5940,7 @@ checksum = "1167586491e2b18b8bfbb293e8180ec17c201c4f076d7cb3070ca964e7598f98"
 dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
- "jni",
+ "jni 0.22.4",
  "log",
  "once_cell",
  "rustls",
@@ -7584,7 +7585,7 @@ version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
 dependencies = [
- "windows-targets",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -7593,7 +7594,7 @@ version = "0.59.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
- "windows-targets",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -7626,14 +7627,14 @@ version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973"
 dependencies = [
- "windows_aarch64_gnullvm",
- "windows_aarch64_msvc",
- "windows_i686_gnu",
+ "windows_aarch64_gnullvm 0.52.6",
+ "windows_aarch64_msvc 0.52.6",
+ "windows_i686_gnu 0.52.6",
  "windows_i686_gnullvm",
- "windows_i686_msvc",
- "windows_x86_64_gnu",
- "windows_x86_64_gnullvm",
- "windows_x86_64_msvc",
+ "windows_i686_msvc 0.52.6",
+ "windows_x86_64_gnu 0.52.6",
+ "windows_x86_64_gnullvm 0.52.6",
+ "windows_x86_64_msvc 0.52.6",
 ]
 
 [[package]]

@@ -64,6 +64,8 @@ tasks.named("preBuild") { dependsOn(cargoNdk) }
 
 dependencies {
     implementation(libs.androidx.core.ktx)
+    // the launch screen (the lynx on espresso) on every Android version the app supports
+    implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
