@@ -61,6 +61,7 @@ import ai.storyteller.lightcraft.android.Control
 import ai.storyteller.lightcraft.android.Engine
 import ai.storyteller.lightcraft.android.LightCraftViewModel
 import ai.storyteller.lightcraft.android.MainTab
+import ai.storyteller.lightcraft.android.Page
 import ai.storyteller.lightcraft.android.Tool
 import ai.storyteller.lightcraft.android.ToolKind
 import ai.storyteller.lightcraft.android.Tools
@@ -588,7 +589,7 @@ private fun DescribeBox(vm: LightCraftViewModel, ai: AiModelStatus) {
 @Composable
 private fun AiModelCard(vm: LightCraftViewModel, ai: AiModelStatus) {
     val context = LocalContext.current
-    val ramGb = remember { deviceMemoryGb(context) }
+    val ramGb = remember { phoneMemoryGb(context) }
     val enough = ramGb >= MIN_AI_RAM_GB
     var confirm by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
@@ -596,9 +597,10 @@ private fun AiModelCard(vm: LightCraftViewModel, ai: AiModelStatus) {
         Spacer(Modifier.height(4.dp))
         Text(
             if (enough) {
-                "Uses Meta's SAM 3 model on this phone. It is an optional ${gb(ai.sizeBytes)} download (${ai.license}, not LightCraft's) and needs several GB of free memory; the first selection on a photo can take a minute."
+                "Uses Meta's SAM 3 model on this phone. It is an optional ${gb(ai.sizeBytes)} download (${ai.license}, not LightCraft's); the first selection on a photo can take a minute." +
+                    if (ramGb < COMFORT_AI_RAM_GB) " With $ramGb GB of memory Android may close LightCraft during a selection; your edits are kept." else ""
             } else {
-                "SAM 3 needs about $MIN_AI_RAM_GB GB of memory; this phone has ${"%.1f".format(ramGb)} GB. Subject, Background and Sky still work on any phone."
+                "SAM 3 needs a phone with $MIN_AI_RAM_GB GB of memory or more; this one has $ramGb GB. Subject, Background and Sky still work on any phone."
             },
             fontFamily = Inter, fontSize = 12.sp, color = Lc.label,
         )
@@ -612,7 +614,11 @@ private fun AiModelCard(vm: LightCraftViewModel, ai: AiModelStatus) {
             }
         } else if (enough) {
             Spacer(Modifier.height(8.dp))
-            Row { LcButton("Download ${gb(ai.sizeBytes)}", on = true) { confirm = true } }
+            Row {
+                LcButton("Download ${gb(ai.sizeBytes)}", on = true) { confirm = true }
+                Spacer(Modifier.width(8.dp))
+                LcButton("Manage Downloads") { vm.openPage(Page.Downloads) }
+            }
             ai.error?.let { Text(it, fontFamily = Inter, fontSize = 12.sp, color = Lc.reject, modifier = Modifier.padding(top = 6.dp)) }
         }
     }
@@ -633,16 +639,27 @@ private fun AiModelCard(vm: LightCraftViewModel, ai: AiModelStatus) {
     }
 }
 
-internal const val MIN_AI_RAM_GB = 6
+/** SAM 3 is offered on phones with this much memory or more (5 GB phones get a warning). */
+internal const val MIN_AI_RAM_GB = 5
+internal const val COMFORT_AI_RAM_GB = 6
 
-internal fun deviceMemoryGb(context: android.content.Context): Double {
-    val am = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager ?: return 0.0
+/**
+ * The phone's memory as it is sold (4, 6, 8 GB…): Android reports a little less than that
+ * (the kernel and firmware keep some), so the reported total is rounded up to whole GiB.
+ */
+internal fun phoneMemoryGb(context: android.content.Context): Int {
+    val am = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager ?: return 0
     val info = android.app.ActivityManager.MemoryInfo()
     am.getMemoryInfo(info)
-    return info.totalMem / 1e9
+    return kotlin.math.ceil(info.totalMem / 1073741824.0).toInt()
 }
 
-private fun gb(bytes: Long) = if (bytes >= 1_000_000_000) "%.1f GB".format(bytes / 1e9) else "%.0f MB".format(bytes / 1e6)
+internal fun gb(bytes: Long) = when {
+    bytes >= 1_000_000_000 -> "%.1f GB".format(java.util.Locale.ROOT, bytes / 1e9)
+    bytes >= 1_000_000 -> "%.0f MB".format(java.util.Locale.ROOT, bytes / 1e6)
+    bytes > 0 -> "%.0f KB".format(java.util.Locale.ROOT, bytes / 1e3)
+    else -> "0 KB"
+}
 
 // ---- Remove -------------------------------------------------------------------------------------
 

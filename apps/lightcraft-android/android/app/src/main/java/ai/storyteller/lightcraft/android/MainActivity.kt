@@ -99,7 +99,10 @@ class MainActivity : ComponentActivity() {
                     for (uris in vm.shareOriginals) shareOriginals(uris)
                 }
                 val photo = editing
-                if (photo == null && opening == null) {
+                val page by vm.page.collectAsStateWithLifecycle()
+                if (page == Page.Downloads) {
+                    ai.storyteller.lightcraft.android.ui.DownloadsScreen(vm, snackbar)
+                } else if (photo == null && opening == null) {
                     LibraryScreen(vm, snackbar)
                 } else {
                     BackHandler { vm.close() }

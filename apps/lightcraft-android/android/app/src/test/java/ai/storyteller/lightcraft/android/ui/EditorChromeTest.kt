@@ -290,4 +290,24 @@ class EditorChromeTest {
             }
         }
     }
+
+    @Test
+    fun downloads() = paparazzi.snapshot {
+        LightCraftTheme {
+            Column(Modifier.fillMaxSize().background(Lc.canvas)) {
+                Row(Modifier.fillMaxWidth().background(Lc.chrome).height(52.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    LcIconButton(DeskIcon.Back, "Back") {}
+                    Text("Downloads & Storage", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = Lc.text)
+                }
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Heading("Models", "Downloaded on demand, smallest first. Photos never leave the phone.")
+                    ItemCard(DeskIcon.Subject, "Subject Segmentation", "Subject, Background, Pop Subject and Remove BG. Google ML Kit through Google Play services.", "Small", "Installed", Lc.text) { LcButton("Release") {} }
+                    ItemCard(DeskIcon.Target, "SAM 3", "Object and Describe masks. Meta's Segment Anything 3, run on the phone; SAM License (Meta).", "3.4 GB", "Downloading… 1.2 GB of 3.4 GB", progress = 0.35f) { LcButton("Cancel") {} }
+                    Heading("Storage", "What LightCraft keeps on this phone.")
+                    ItemCard(DeskIcon.Sliders, "Library and Edits", "Your edits, ratings, flags, masks and history.", "2 MB", "In use", Lc.text)
+                    ItemCard(DeskIcon.Share, "Export Cache", "Files made for the share sheet.", "14 MB", "Can be cleared") { LcButton("Clear") {} }
+                }
+            }
+        }
+    }
 }

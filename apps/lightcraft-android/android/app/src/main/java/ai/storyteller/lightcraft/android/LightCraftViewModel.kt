@@ -126,6 +126,15 @@ data class AiModelStatus(
     val error: String? = null,
 )
 
+/** The ML Kit subject-segmentation model, which Google Play services downloads and keeps. */
+data class SegModelStatus(val checked: Boolean = false, val installed: Boolean = false, val downloading: Boolean = false, val progress: Float = 0f, val error: String? = null)
+
+/** What LightCraft keeps on the phone, in bytes, for the Downloads & Storage page. */
+data class StorageUse(val catalog: Long = 0, val copies: Long = 0, val exports: Long = 0, val models: Long = 0)
+
+/** Full-screen pages besides the library and the editor. */
+enum class Page { None, Downloads }
+
 /** Brush settings for brush, dodge and burn masks. */
 data class BrushSettings(val size: Float = 0.04f, val feather: Float = 50f, val flow: Float = 60f, val erase: Boolean = false)
 
@@ -262,6 +271,15 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     private val _wbPicking = MutableStateFlow(false)
     /** The white-balance selector is armed: the next tap on the photo picks a neutral point. */
     val wbPicking: StateFlow<Boolean> = _wbPicking.asStateFlow()
+
+    private val _page = MutableStateFlow(Page.None)
+    val page: StateFlow<Page> = _page.asStateFlow()
+
+    private val _seg = MutableStateFlow(SegModelStatus())
+    val seg: StateFlow<SegModelStatus> = _seg.asStateFlow()
+
+    private val _storage = MutableStateFlow(StorageUse())
+    val storage: StateFlow<StorageUse> = _storage.asStateFlow()
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
@@ -1208,6 +1226,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             do {
                 kotlinx.coroutines.delay(1000)
                 withContext(commands) { readAiStatus() }
+                if (_page.value == Page.Downloads) _storage.value = withContext(Dispatchers.IO) { measureStorage() }
             } while (_ai.value.downloading)
             if (_ai.value.installed) messages.trySend("AI object selection is ready")
             _ai.value.error?.let { messages.trySend("Download stopped: $it") }
@@ -1218,6 +1237,84 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(commands) {
             withEngine { e -> e.execute("segment.model.cancel") }
             readAiStatus()
+        }
+    }
+
+    // ---- downloads & storage ---------------------------------------------------------------------
+
+    fun openPage(p: Page) {
+        _page.value = p
+        if (p == Page.Downloads) refreshDownloads()
+    }
+
+    /** Re-read both models' state and the storage use. */
+    fun refreshDownloads() {
+        val app = getApplication<Application>()
+        refreshAiStatus()
+        viewModelScope.launch(Dispatchers.IO) {
+            if (!_seg.value.downloading) _seg.value = _seg.value.copy(checked = true, installed = Segmenter.installed(app))
+            _storage.value = measureStorage()
+        }
+    }
+
+    private fun dirSize(f: File): Long = runCatching { f.walkBottomUp().filter { it.isFile }.sumOf { it.length() } }.getOrDefault(0L)
+
+    private fun measureStorage(): StorageUse {
+        val app = getApplication<Application>()
+        return StorageUse(
+            catalog = dirSize(File(app.filesDir, "catalog")),
+            copies = dirSize(File(app.filesDir, "originals")),
+            exports = dirSize(File(app.cacheDir, "exports")),
+            models = dirSize(File(app.filesDir, "models")),
+        )
+    }
+
+    /** Have Play services download the subject-segmentation model now. */
+    fun downloadSegModel() {
+        val app = getApplication<Application>()
+        _seg.value = _seg.value.copy(downloading = true, progress = 0f, error = null)
+        Segmenter.install(app, progress = { f -> _seg.value = _seg.value.copy(progress = f) }) { err ->
+            _seg.value = SegModelStatus(checked = true, installed = err == null, error = err)
+        }
+    }
+
+    /** Let Play services remove the subject-segmentation model (it comes back with the next use). */
+    fun releaseSegModel() {
+        Segmenter.release(getApplication())
+        _seg.value = _seg.value.copy(installed = false)
+        messages.trySend("Google Play services may now remove the model; it downloads again when needed")
+    }
+
+    /** Delete the SAM 3 model's files (a running download is stopped first). */
+    fun deleteAiModel() {
+        val app = getApplication<Application>()
+        viewModelScope.launch(commands) {
+            withEngine { e -> runCatching { e.execute("segment.model.cancel") } }
+            val dir = File(File(app.filesDir, "models"), "sam3")
+            val ok = runCatching { dir.deleteRecursively() }.getOrDefault(false)
+            readAiStatus()
+            _storage.value = measureStorage()
+            messages.trySend(if (ok) "SAM 3 deleted" else "Some SAM 3 files could not be deleted")
+        }
+    }
+
+    /** Clear the private copies of photos LightCraft could not read in place (made again when needed). */
+    fun clearCopies() {
+        val app = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            File(app.filesDir, "originals").listFiles()?.forEach { it.delete() }
+            _storage.value = measureStorage()
+            messages.trySend("Photo copies cleared")
+        }
+    }
+
+    /** Clear exported files waiting in the share cache. */
+    fun clearExports() {
+        val app = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            File(app.cacheDir, "exports").listFiles()?.forEach { it.deleteRecursively() }
+            _storage.value = measureStorage()
+            messages.trySend("Export cache cleared")
         }
     }
 

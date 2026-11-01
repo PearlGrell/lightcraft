@@ -97,6 +97,7 @@ import ai.storyteller.lightcraft.android.GalleryImage
 import ai.storyteller.lightcraft.android.LibrarySource
 import ai.storyteller.lightcraft.android.LightCraftViewModel
 import ai.storyteller.lightcraft.android.Mark
+import ai.storyteller.lightcraft.android.Page
 import ai.storyteller.lightcraft.android.R
 import ai.storyteller.lightcraft.android.SortOrder
 import ai.storyteller.lightcraft.android.ViewMode
@@ -350,6 +351,18 @@ private fun Sidebar(
         if (Gallery.hasTrash) {
             Spacer(Modifier.height(10.dp))
             SideRow(DeskIcon.Trash, "Recently Deleted", trash.size, source == LibrarySource.Deleted) { onSource(LibrarySource.Deleted) }
+        }
+        Spacer(Modifier.height(10.dp))
+        Box(Modifier.fillMaxWidth().padding(horizontal = 18.dp).height(1.dp).background(Lc.divider))
+        Spacer(Modifier.height(10.dp))
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(40.dp).clip(RoundedCornerShape(6.dp)).clickable { vm.openPage(Page.Downloads) }.padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            LcIcon(DeskIcon.Download, Lc.icon, 18.dp)
+            Spacer(Modifier.width(12.dp))
+            Text("Downloads & Storage", fontFamily = Inter, fontSize = 14.sp, color = Lc.text, modifier = Modifier.weight(1f))
+            LcIcon(DeskIcon.ChevronRight, Lc.dim, 14.dp)
         }
     }
 }

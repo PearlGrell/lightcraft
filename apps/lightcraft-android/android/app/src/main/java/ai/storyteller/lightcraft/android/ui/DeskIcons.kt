@@ -36,6 +36,8 @@ enum class DeskIcon {
     /** Undo and Redo: a hooked arrow (drawn for the phone in the same pen; the desktop uses text arrows). */
     Undo, Redo,
     Filmstrip,
+    /** Download: an arrow down into a tray (Share turned over). */
+    Download,
 }
 
 /** [icon] in [tint], [size] square (20 grid units). */
@@ -232,6 +234,11 @@ fun DrawScope.drawDeskIcon(icon: DeskIcon, color: Color) {
         DeskIcon.Invert -> { p.circle(10f, 10f, 7f); p.fill(ring(10f, 10f, 7f, 90f, 270f, 16)) }
         DeskIcon.Heart -> p.closed(10f to 16.5f, 3.5f to 9.5f, 4f to 5.5f, 7.5f to 4f, 10f to 6.5f, 12.5f to 4f, 16f to 5.5f, 16.5f to 9.5f)
         DeskIcon.Edited -> { p.circle(10f, 10f, 7f); p.line(7f to 13f, 13f to 7f) }
+        DeskIcon.Download -> {
+            p.line(4f to 12f, 4f to 17f, 16f to 17f, 16f to 12f)
+            p.line(10f to 2.5f, 10f to 13f)
+            p.line(6.5f to 9.5f, 10f to 13f, 13.5f to 9.5f)
+        }
         DeskIcon.Filmstrip -> {
             p.rect(2.5f, 5f, 17.5f, 15f, 1f)
             p.rectFill(5f, 11f, 8.5f, 13.5f, 0.3f)
