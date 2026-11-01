@@ -45,9 +45,24 @@ android {
         applicationId = "ai.storyteller.lightcraft.android"
         minSdk = 29
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.16.2"
+        versionCode = 19
+        versionName = "0.16.3"
         ndk { abiFilters += rustAbis }
+    }
+
+    // Release APKs are signed with the key named in LIGHTCRAFT_KEYSTORE (CI decodes it from the
+    // ANDROID_KEYSTORE_BASE64 secret), so every build installs over the last; without one they fall
+    // back to the machine's debug key. The key never lives in the repository.
+    val releaseKey = System.getenv("LIGHTCRAFT_KEYSTORE")?.takeIf { it.isNotBlank() }
+    signingConfigs {
+        if (releaseKey != null) {
+            create("lightcraft") {
+                storeFile = file(releaseKey)
+                storePassword = System.getenv("LIGHTCRAFT_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("LIGHTCRAFT_KEY_ALIAS")
+                keyPassword = System.getenv("LIGHTCRAFT_KEY_PASSWORD") ?: System.getenv("LIGHTCRAFT_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -55,8 +70,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // unsigned unless the build supplies a key; debug-signed so a CI artifact installs
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (releaseKey != null) "lightcraft" else "debug")
         }
     }
     sourceSets["main"].jniLibs.srcDir(rustJniLibs)

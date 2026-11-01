@@ -153,6 +153,14 @@ impl Mobile {
         run(if draft { job.draft() } else { job })
     }
 
+    /// `photo` with its edits but without its crop, fitted into `max_w × max_h`: what the crop
+    /// tool draws its frame over (crop rectangles are normalized to this uncropped photo).
+    pub fn render_uncropped(&self, photo: u64, max_w: u32, max_h: u32, draft: bool) -> Result<Frame, String> {
+        let (w, h) = (clamp_edge(max_w)?, clamp_edge(max_h)?);
+        let job = self.lock().loupe_job(PhotoId(photo), w, h, false).ok_or_else(|| format!("no photo {photo}"))?;
+        run(if draft { job.draft() } else { job })
+    }
+
     /// A grid thumbnail of `photo` whose long edge is at least `long_edge`.
     pub fn thumbnail(&self, photo: u64, long_edge: u32) -> Result<Frame, String> {
         let edge = clamp_edge(long_edge)?;
@@ -634,6 +642,22 @@ mod tests {
         assert_eq!(m.forget_paths(&[]).unwrap(), 0);
         assert_eq!(parse(&m.gallery_marks()).as_array().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_uncropped_render_ignores_the_crop() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        let full = m.render(id, 400, 400, false, false).unwrap();
+        assert_eq!(parse(&m.execute("crop.set", r#"{"rect":[0.0,0.0,0.5,1.0]}"#))["ok"], true);
+        let cropped = m.render(id, 400, 400, false, false).unwrap();
+        let uncropped = m.render_uncropped(id, 400, 400, false).unwrap();
+        let aspect = |f: &Frame| f.width as f32 / f.height as f32;
+        assert!((aspect(&uncropped) - aspect(&full)).abs() < 0.02, "{} vs {}", aspect(&uncropped), aspect(&full));
+        assert!((aspect(&cropped) - aspect(&full) / 2.0).abs() < 0.05, "the crop halves the width");
+        assert!(m.render_uncropped(999_999, 64, 64, false).is_err());
+        assert!(m.render_uncropped(id, 0, 64, false).is_err());
     }
 
     #[test]

@@ -238,6 +238,26 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeThumb
     }
 }
 
+/// `photo` without its crop (the crop tool's view), as `[width, height, argb…]`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeRenderUncropped<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    max_w: jint,
+    max_h: jint,
+    draft: jboolean,
+) -> jintArray {
+    match guarded(|| session(handle)?.render_uncropped(photo_id(photo)?, edge(max_w)?, edge(max_h)?, draft != 0)) {
+        Ok(f) => int_array(&mut env, &frame_ints(&f)),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Export `photo` into the folder `dir` with the export dialog's JSON `options`; returns the path
 /// written, or throws `IllegalStateException` with the reason.
 #[unsafe(no_mangle)]

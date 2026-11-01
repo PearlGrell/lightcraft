@@ -82,6 +82,21 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 ./gradlew assembleRelease -PrustAbis=arm64-v8a   # phones only, faster
 ```
 
+**Signing.** Android installs an update only when it is signed with the same key as the app on
+the phone. Release builds use the key in `LIGHTCRAFT_KEYSTORE` (with `LIGHTCRAFT_KEYSTORE_PASSWORD`,
+`LIGHTCRAFT_KEY_ALIAS`, optionally `LIGHTCRAFT_KEY_PASSWORD`); CI decodes it from the repository
+secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS`. Without
+them the APK is signed with a throwaway debug key and won't install over an earlier build. The key
+never goes in the repository. To make one:
+
+```sh
+keytool -genkeypair -keystore lightcraft.keystore -storetype PKCS12 -alias lightcraft \
+  -keyalg RSA -keysize 3072 -validity 18250 -dname "CN=LightCraft"
+base64 -w0 lightcraft.keystore   # the value of ANDROID_KEYSTORE_BASE64
+```
+
+Keep the keystore and its password somewhere safe: an app signed with a lost key can't be updated.
+
 Gradle runs `cargo ndk` before every build (the `cargoNdk` task), so Rust changes are picked up.
 The release APK is minified and signed with the debug key so it installs directly; a store build
 supplies its own signing config. `smoke-test.sh` installs an APK on a connected device or emulator,

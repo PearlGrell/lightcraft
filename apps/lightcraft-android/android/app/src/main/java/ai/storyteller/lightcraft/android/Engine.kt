@@ -74,6 +74,10 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
     fun render(photo: Long, maxW: Int, maxH: Int, before: Boolean = false, draft: Boolean = false): Bitmap =
         bitmap(nativeRender(live(), photo, maxW, maxH, before, draft))
 
+    /** [photo] with its edits but without its crop (the crop tool's view). */
+    fun renderUncropped(photo: Long, maxW: Int, maxH: Int, draft: Boolean = false): Bitmap =
+        bitmap(nativeRenderUncropped(live(), photo, maxW, maxH, draft))
+
     /** A grid thumbnail whose long edge is at least [longEdge]. */
     fun thumbnail(photo: Long, longEdge: Int): Bitmap = bitmap(nativeThumbnail(live(), photo, longEdge))
 
@@ -154,6 +158,7 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativePhotoForPath(handle: Long, path: String): Long
         @JvmStatic private external fun nativePhotos(handle: Long): LongArray
         @JvmStatic private external fun nativeRender(handle: Long, photo: Long, maxW: Int, maxH: Int, before: Boolean, draft: Boolean): IntArray
+        @JvmStatic private external fun nativeRenderUncropped(handle: Long, photo: Long, maxW: Int, maxH: Int, draft: Boolean): IntArray
         @JvmStatic private external fun nativeThumbnail(handle: Long, photo: Long, longEdge: Int): IntArray
         @JvmStatic private external fun nativePresetThumbnail(handle: Long, photo: Long, preset: String, longEdge: Int): IntArray
         @JvmStatic private external fun nativeAddSegMask(handle: Long, name: String, side: Int, probs: FloatArray, invert: Boolean): String

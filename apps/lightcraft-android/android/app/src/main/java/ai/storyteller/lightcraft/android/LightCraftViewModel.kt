@@ -20,7 +20,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** The open photo's treatment (`color` / `bw`), profile and white-balance mode. */
-data class Look(val treatment: String = "color", val profile: String = "lc.color", val profileAmount: Float = 100f, val wb: String = "asShot")
+data class Look(
+    val treatment: String = "color",
+    val profile: String = "lc.color",
+    val profileAmount: Float = 100f,
+    val wb: String = "asShot",
+    /** The crop, normalized over the uncropped photo: x0, y0, x1, y1. */
+    val crop: List<Float> = listOf(0f, 0f, 1f, 1f),
+)
 
 /** A develop preset (`presets.list`). */
 data class Preset(val id: String, val name: String, val group: String)
@@ -458,6 +465,8 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     fun selectTab(tab: MainTab) {
         if (_tab.value == tab) return
         if (_tab.value == MainTab.Remove) endCutout()
+        // leaving Crop: the photo is shown cropped again
+        if (_tab.value == MainTab.Crop) requestRender(draft = false)
         _tab.value = tab
         _tool.value = when (tab) {
             MainTab.Remove -> Tools.remove[0]
@@ -466,6 +475,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         objectMask = null
         when (tab) {
             MainTab.Presets -> loadPresets()
+            MainTab.Crop -> requestRender(draft = false)
             MainTab.Remove -> beginCutout()
             MainTab.Masking -> viewModelScope.launch(commands) { loadState() }
             else -> {}
@@ -676,7 +686,23 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     fun cropCommand(id: String) = runEdit(id)
 
     /** A centred crop of [aspect] (width / height) of the uncropped photo, or the whole photo for 0. */
+    private val _cropView = MutableStateFlow<Bitmap?>(null)
+    /** The photo without its crop, while the Crop tool is open. */
+    val cropView: StateFlow<Bitmap?> = _cropView.asStateFlow()
+
+    private val _cropRatio = MutableStateFlow(0f)
+    /** The aspect the crop frame keeps while dragged (width / height; 0 = free). */
+    val cropRatio: StateFlow<Float> = _cropRatio.asStateFlow()
+
+    /** The crop frame was dragged: set it (normalized over the uncropped photo), one undo step. */
+    fun setCropRect(x0: Float, y0: Float, x1: Float, y1: Float) {
+        val r = listOf(x0, y0, x1, y1).map { it.coerceIn(0f, 1f).toDouble() }
+        if (r[2] - r[0] < 0.02 || r[3] - r[1] < 0.02) return
+        runEdit("crop.set", JSONObject().put("rect", JSONArray(r)))
+    }
+
     fun cropAspect(aspect: Float) {
+        _cropRatio.value = aspect
         val photo = _editing.value ?: return
         viewModelScope.launch(commands) {
             val rect = if (aspect <= 0f) {
@@ -1568,6 +1594,9 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             profile = d.optJSONObject("profile")?.optString("id", "lc.color") ?: "lc.color",
             profileAmount = d.optJSONObject("profile")?.optDouble("amount", 100.0)?.toFloat() ?: 100f,
             wb = d.optJSONObject("wb")?.optString("mode", "asShot") ?: "asShot",
+            crop = d.optJSONObject("crop")?.optJSONObject("geometry")?.optJSONObject("rect")?.let { r ->
+                listOf("x0", "y0", "x1", "y1").map { r.optDouble(it, if (it.endsWith("1")) 1.0 else 0.0).toFloat().coerceIn(0f, 1f) }
+            } ?: listOf(0f, 0f, 1f, 1f),
         )
         d.optJSONObject("curve")?.let { c ->
             _curves.value = listOf("master", "red", "green", "blue").associateWith { ch ->
@@ -1590,6 +1619,13 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         val e = engine ?: return
         val (w, h) = viewport
         val t0 = System.nanoTime()
+        if (_tab.value == MainTab.Crop) {
+            // the crop tool draws its frame over the whole photo
+            runCatching { e.renderUncropped(photo, w, h, draft) }
+                .onSuccess { if (_editing.value == photo) _cropView.value = it }
+                .onFailure { messages.trySend("Render failed: ${it.message}") }
+            return
+        }
         runCatching { e.render(photo, w, h, draft = draft) }
             .onSuccess {
                 if (_editing.value == photo) _preview.value = it

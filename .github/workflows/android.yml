@@ -61,6 +61,24 @@ jobs:
           cargo install cargo-ndk --locked
       - name: Engine tests (host)
         run: cargo test -p lightcraft-mobile -p lightcraft-android
+      - name: Signing key
+        # one key for every build (a repository secret), so each APK installs over the last;
+        # without the secret the APK is signed with this runner's throwaway debug key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/lightcraft.keystore"
+            {
+              echo "LIGHTCRAFT_KEYSTORE=$RUNNER_TEMP/lightcraft.keystore"
+              echo "LIGHTCRAFT_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD"
+              echo "LIGHTCRAFT_KEY_ALIAS=${KEY_ALIAS:-lightcraft}"
+            } >> "$GITHUB_ENV"
+          else
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret: the APK is signed with a throwaway debug key and won't install over earlier builds."
+          fi
       - name: Build the APK
         working-directory: apps/lightcraft-android/android
         run: ./gradlew assembleRelease --console=plain
@@ -101,8 +119,8 @@ jobs:
           path: screenshots
 
   # Manual runs with a `release` tag publish the tested APK as a GitHub pre-release (created, or
-  # its APK replaced when the tag already has one). The APK is debug-signed: it installs directly
-  # but is not a store build.
+  # its APK replaced when the tag already has one). Signed with the ANDROID_KEYSTORE_BASE64 secret's key
+  # when it is set (so each APK installs over the last); not a store build.
   release:
     needs: [apk, emulator]
     if: github.event_name == 'workflow_dispatch' && inputs.release != ''
@@ -127,5 +145,5 @@ jobs:
           else
             gh release create "$TAG" "$apk" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
               --title "LightCraft for Android $TAG" \
-              --notes "LightCraft for Android, built from ${GITHUB_SHA} by the Android workflow (engine tests and an emulator smoke test passed). Debug-signed: allow installs from this source on the phone. The optional SAM 3 model for Object / Describe masks is downloaded in the app, never bundled."
+              --notes "LightCraft for Android, built from ${GITHUB_SHA} by the Android workflow (engine tests and an emulator smoke test passed). Allow installs from this source on the phone. The optional SAM 3 model for Object / Describe masks is downloaded in the app, never bundled."
           fi

@@ -100,14 +100,19 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
     var area by remember { mutableStateOf(IntSize.Zero) }
     var sheet by remember { mutableStateOf<String?>(null) }
     var panelOpen by rememberSaveable { mutableStateOf(true) }
-    var stripOpen by rememberSaveable { mutableStateOf(true) }
+    // the filmstrip starts folded away: the rail's filmstrip button opens it
+    var stripOpen by rememberSaveable { mutableStateOf(false) }
     var panelShare by rememberSaveable { mutableFloatStateOf(0.46f) }
     val stroke = remember { mutableStateListOf<Offset>() }
     val removing = tab == MainTab.Remove
     val painting = tab == MainTab.Masking && tool?.kind == ToolKind.Brush && activeMask != null
     val tapping = tab == MainTab.Masking && tool?.kind == ToolKind.Object && ai.installed
     val picking = wbPicking && tab == MainTab.Edit
-    val fixed = painting || tapping || picking
+    val cropping = tab == MainTab.Crop
+    val cropView by vm.cropView.collectAsStateWithLifecycle()
+    val cropRatio by vm.cropRatio.collectAsStateWithLifecycle()
+    val look by vm.look.collectAsStateWithLifecycle()
+    val fixed = painting || tapping || picking || cropping
     if (fixed && zoom != 1f) {
         zoom = 1f
         pan = Offset.Zero
@@ -128,6 +133,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                     },
             ) {
                 val shown: Bitmap? = when {
+                    cropping -> cropView ?: preview
                     removing -> cutout ?: preview
                     holding -> before ?: preview
                     else -> preview
@@ -211,6 +217,10 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                     } else {
                         CircularProgressIndicator(Modifier.align(Alignment.Center), color = Lc.text, strokeWidth = 2.dp)
                     }
+                    val cv = cropView
+                    if (cropping && fit != null && cv != null) {
+                        CropOverlay(fit, look.crop, cropRatio, cv.width.toFloat() / cv.height.coerceAtLeast(1)) { r -> vm.setCropRect(r[0], r[1], r[2], r[3]) }
+                    }
                     if (painting && fit != null) {
                         val radius = brush.size * maxOf(fit.width, fit.height)
                         Canvas(Modifier.fillMaxSize()) {
@@ -219,7 +229,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                         }
                     }
                     if (holding && !removing) Pill("Before", Modifier.align(Alignment.TopStart).padding(12.dp))
-                    if (fixed) {
+                    if (fixed && !cropping) {
                         val hint = when {
                             picking -> "Tap a neutral grey or white in the photo"
                             painting && brush.erase -> "Erasing: drag on the photo"
