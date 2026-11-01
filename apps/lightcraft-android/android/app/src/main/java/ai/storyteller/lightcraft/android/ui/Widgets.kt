@@ -322,3 +322,21 @@ fun Stars(rating: Int, size: Dp = 11.dp, tint: Color = Lc.star, empty: Color = t
         }
     }
 }
+
+/** Messages as the desktop's toasts: dark, Inter, with a hairline border, not Material's light snackbar. */
+@Composable
+fun LcSnackbarHost(state: androidx.compose.material3.SnackbarHostState, modifier: Modifier = Modifier) {
+    androidx.compose.material3.SnackbarHost(state, modifier) { data ->
+        Box(
+            Modifier
+                .padding(horizontal = 12.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .background(Lc.hover)
+                .border(1.dp, Lc.buttonBorder, RoundedCornerShape(6.dp))
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+        ) {
+            Text(data.visuals.message, fontFamily = Inter, fontSize = 13.sp, color = Lc.text)
+        }
+    }
+}

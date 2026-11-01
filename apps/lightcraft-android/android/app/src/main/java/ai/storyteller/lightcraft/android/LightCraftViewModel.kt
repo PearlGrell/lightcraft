@@ -124,7 +124,14 @@ data class AiModelStatus(
     val sizeBytes: Long = 3_439_938_512,
     val license: String = "SAM License (Meta)",
     val error: String? = null,
+    /** How many download locations are configured (0: none, so the download needs a source). */
+    val mirrors: Int = 0,
 )
+
+/** Where SAM 3 downloads from: Meta's gated Hugging Face page with the person's own token, or a mirror. */
+data class SamSource(val token: String = "", val mirror: String = "") {
+    val configured: Boolean get() = token.isNotBlank() || mirror.isNotBlank()
+}
 
 /** The ML Kit subject-segmentation model, which Google Play services downloads and keeps. */
 data class SegModelStatus(val checked: Boolean = false, val installed: Boolean = false, val downloading: Boolean = false, val progress: Float = 0f, val error: String? = null)
@@ -137,6 +144,9 @@ enum class Page { None, Downloads }
 
 /** Brush settings for brush, dodge and burn masks. */
 data class BrushSettings(val size: Float = 0.04f, val feather: Float = 50f, val flow: Float = 60f, val erase: Boolean = false)
+
+/** Meta's SAM 3 on Hugging Face (gated: each person accepts the licence there and uses their own token). */
+const val HF_SAM3 = "https://huggingface.co/facebook/sam3/resolve/main"
 
 /** What the screens show; every change goes through engine commands. */
 class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
@@ -305,6 +315,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 // the edits live here; the photos stay where they are in the gallery
                 e.openLibrary(File(app.filesDir, "catalog").absolutePath, seedDemo = false)
                 runCatching { e.setModelsDir(File(app.filesDir, "models").absolutePath) }
+                loadSamSource()
                 engine = e
                 _marks.value = e.galleryMarks()
                 _ready.value = true
@@ -515,6 +526,10 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun begin(e: Engine, label: String) {
+        if (_lastPreset.value != null) {
+            _lastPreset.value = null
+            _presetThumbs.value = emptyMap()
+        }
         if (!interacting) {
             e.execute("develop.beginInteraction", JSONObject().put("label", label))
             interacting = true
@@ -573,7 +588,66 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- presets -------------------------------------------------------------------------------
 
-    fun applyPreset(id: String) = runEdit("preset.apply", JSONObject().put("id", id))
+    private val _lastPreset = MutableStateFlow<String?>(null)
+    /** The preset being tried on: applied last, with no other edit since (another one replaces it). */
+    val lastPreset: StateFlow<String?> = _lastPreset.asStateFlow()
+
+    private val _presetAmount = MutableStateFlow(100f)
+    val presetAmount: StateFlow<Float> = _presetAmount.asStateFlow()
+
+    @Volatile private var applyingPreset = false
+
+    /**
+     * Try a preset on: it replaces the preset tried just before (undone first), so presets don't
+     * pile up; the same preset again takes it off. Presets change only the settings they contain,
+     * on top of the photo's other edits, as on the desktop.
+     */
+    fun applyPreset(id: String) {
+        val replacing = _lastPreset.value
+        if (replacing == id) {
+            removePreset()
+            return
+        }
+        _presetAmount.value = 100f
+        presetStep(undoFirst = replacing != null, id = id, amount = 100f)
+    }
+
+    /** The tried-on preset's strength, 0–200 %: re-applied at the new amount, one step. */
+    fun setPresetAmount(amount: Float) {
+        _presetAmount.value = amount.coerceIn(0f, 200f)
+    }
+
+    fun commitPresetAmount() {
+        val id = _lastPreset.value ?: return
+        presetStep(undoFirst = true, id = id, amount = _presetAmount.value)
+    }
+
+    /** Take the tried-on preset off again. */
+    fun removePreset() {
+        if (_lastPreset.value == null) return
+        viewModelScope.launch(commands) {
+            applyingPreset = true
+            withEngine { e -> e.execute("edit.undo") }
+            _lastPreset.value = null
+            afterEdit()
+        }
+    }
+
+    private fun presetStep(undoFirst: Boolean, id: String, amount: Float) {
+        viewModelScope.launch(commands) {
+            if (interacting) {
+                interacting = false
+                withEngine { e -> e.execute("develop.endInteraction") }
+            }
+            applyingPreset = true
+            withEngine { e ->
+                if (undoFirst) e.execute("edit.undo")
+                e.execute("preset.apply", JSONObject().put("id", id).put("amount", amount.toDouble()))
+                _lastPreset.value = id
+            }
+            afterEdit()
+        }
+    }
 
     private fun loadPresets() {
         viewModelScope.launch(commands) {
@@ -1213,7 +1287,86 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             sizeBytes = o.optLong("sizeBytes", 3_439_938_512),
             license = o.optString("license", "SAM License (Meta)"),
             error = d?.optString("error")?.takeIf { it.isNotEmpty() && it != "null" },
+            mirrors = o.optInt("mirrors", 0),
         )
+    }
+
+    private val prefs by lazy { getApplication<Application>().getSharedPreferences("lightcraft", android.content.Context.MODE_PRIVATE) }
+
+    private val _samSource = MutableStateFlow(SamSource())
+    /** Where SAM 3 downloads from (kept in the app's private settings). */
+    val samSource: StateFlow<SamSource> = _samSource.asStateFlow()
+
+    /** Read the saved download source and hand it to the engine (its documented environment settings). */
+    private fun loadSamSource() {
+        _samSource.value = SamSource(prefs.getString("sam3.token", "") ?: "", prefs.getString("sam3.mirror", "") ?: "")
+        exportSamSource(_samSource.value)
+    }
+
+    private fun exportSamSource(src: SamSource) {
+        runCatching {
+            val mirror = src.mirror.trim().ifEmpty { if (src.token.isNotBlank()) HF_SAM3 else "" }
+            if (mirror.isEmpty()) android.system.Os.unsetenv("LIGHTCRAFT_SAM3_MIRRORS") else android.system.Os.setenv("LIGHTCRAFT_SAM3_MIRRORS", mirror, true)
+            if (src.token.isBlank()) android.system.Os.unsetenv("LIGHTCRAFT_SAM3_TOKEN") else android.system.Os.setenv("LIGHTCRAFT_SAM3_TOKEN", src.token.trim(), true)
+        }.onFailure { Log.w(tag, "SAM 3 source", it) }
+    }
+
+    /**
+     * Save where SAM 3 downloads from: a Hugging Face access token (Meta's page, once the person
+     * accepted the licence there) and / or a mirror URL. Blank clears.
+     */
+    fun setSamSource(token: String, mirror: String) {
+        val m = mirror.trim()
+        if (m.isNotEmpty() && !m.startsWith("https://")) {
+            messages.trySend("A mirror must be an https:// address")
+            return
+        }
+        val src = SamSource(token.trim(), m)
+        prefs.edit().putString("sam3.token", src.token).putString("sam3.mirror", src.mirror).apply()
+        _samSource.value = src
+        exportSamSource(src)
+        refreshAiStatus()
+    }
+
+    /**
+     * Install SAM 3 from files the person has: `model.safetensors`, `vocab.json` and `merges.txt`
+     * (by those names) are copied into the model folder.
+     */
+    fun importSamFiles(uris: List<android.net.Uri>) {
+        val app = getApplication<Application>()
+        if (uris.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            _busy.value = true
+            try {
+                val dir = File(File(app.filesDir, "models"), "sam3").apply { mkdirs() }
+                val wanted = setOf("model.safetensors", "vocab.json", "merges.txt")
+                var copied = 0
+                for (uri in uris) {
+                    val name = app.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) c.getString(0) else null
+                    } ?: continue
+                    if (name !in wanted) {
+                        messages.trySend("$name isn't one of the SAM 3 files (model.safetensors, vocab.json, merges.txt)")
+                        continue
+                    }
+                    val part = File(dir, "$name.import")
+                    app.contentResolver.openInputStream(uri)?.use { input -> part.outputStream().use { input.copyTo(it, 1 shl 20) } } ?: continue
+                    if (!part.renameTo(File(dir, name))) part.delete() else copied++
+                }
+                val model = File(dir, "model.safetensors")
+                if (model.exists() && model.length() != _ai.value.sizeBytes) {
+                    messages.trySend("model.safetensors is ${model.length()} bytes, not the ${_ai.value.sizeBytes} of Meta's Hugging Face release; it may not load")
+                }
+                withContext(commands) { readAiStatus() }
+                _storage.value = measureStorage()
+                messages.trySend(if (_ai.value.installed) "SAM 3 is installed" else "Imported $copied file(s); SAM 3 needs all three")
+            } catch (t: Throwable) {
+                Log.w(tag, "import SAM 3", t)
+                messages.trySend("Could not import: ${t.message ?: "the files are not readable"}")
+            } finally {
+                _busy.value = false
+            }
+        }
     }
 
     /** Download the SAM 3 model (the person agreed in the dialog); progress is polled until done. */
@@ -1392,7 +1545,14 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     private fun afterEdit(selectNewest: Boolean = false) {
         loadState()
         if (selectNewest) _masks.value.maxByOrNull { it.id }?.let { _activeMask.value = it.id }
-        _presetThumbs.value = emptyMap()
+        // a preset being tried on leaves the previews as they are (they show the photo without it);
+        // any other edit makes them stale
+        if (applyingPreset) {
+            applyingPreset = false
+        } else {
+            _lastPreset.value = null
+            _presetThumbs.value = emptyMap()
+        }
         requestRender(draft = false)
     }
 

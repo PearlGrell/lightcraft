@@ -208,7 +208,7 @@ fun LibraryScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
                             PhotoGrid(vm, shown, mode, rowHeight.dp, version, marks, selection, selecting)
                         }
                     }
-                    SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
+                    LcSnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
                 }
                 BottomBar(
                     vm, mode, sort, rowHeight, selecting, deleted, copied,

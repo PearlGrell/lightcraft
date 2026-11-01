@@ -45,8 +45,8 @@ android {
         applicationId = "ai.storyteller.lightcraft.android"
         minSdk = 29
         targetSdk = 35
-        versionCode = 17
-        versionName = "0.16.1"
+        versionCode = 18
+        versionName = "0.16.2"
         ndk { abiFilters += rustAbis }
     }
 

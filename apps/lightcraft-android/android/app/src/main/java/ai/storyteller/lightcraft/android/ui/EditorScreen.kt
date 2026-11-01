@@ -243,7 +243,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                         }
                     }
                 }
-                SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
+                LcSnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
             }
             if (stripOpen) Filmstrip(vm)
             // the panel's handle: tap to fold the panel away or bring it back, drag to resize it

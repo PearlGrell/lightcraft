@@ -84,7 +84,7 @@ fun DownloadsScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
                 Spacer(Modifier.height(24.dp))
             }
         }
-        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 12.dp))
+        LcSnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 12.dp))
     }
 }
 
@@ -98,6 +98,7 @@ internal fun Heading(title: String, body: String) {
 }
 
 /** One model or storage item: an icon tile, name, what it's for, its size and state, and actions. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 internal fun ItemCard(
     icon: DeskIcon,
@@ -135,7 +136,7 @@ internal fun ItemCard(
             Spacer(Modifier.height(10.dp))
             LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, Modifier.fillMaxWidth().height(2.dp), color = Lc.accent, trackColor = Lc.track)
         }
-        if (actions != null) Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) { actions() }
+        if (actions != null) androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp)) { actions() }
     }
 }
 
@@ -171,12 +172,18 @@ private fun SamRow(vm: LightCraftViewModel, ai: AiModelStatus) {
     val ramGb = remember { phoneMemoryGb(context) }
     val enough = ramGb >= MIN_AI_RAM_GB
     var confirm by remember { mutableStateOf<String?>(null) }
+    val source by vm.samSource.collectAsStateWithLifecycle()
+    val pick = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        vm.importSamFiles(uris)
+    }
+    val noSource = ai.mirrors == 0 && !source.configured
     val total = ai.total.takeIf { it > 0 } ?: ai.sizeBytes
     val state = when {
         ai.downloading -> "Downloading… ${gb(ai.done)} of ${gb(total)}"
         ai.installed -> "Installed" + if (ramGb < COMFORT_AI_RAM_GB) ". With $ramGb GB of memory Android may close LightCraft during a selection." else ""
         !enough -> "Needs a phone with $MIN_AI_RAM_GB GB of memory or more; this one has $ramGb GB"
         ai.done > 0 -> "Paused at ${gb(ai.done)}: download again to resume"
+        noSource -> "Not installed. Meta shares SAM 3 only with people who accept its licence: set up the download with your Hugging Face account, or import the files."
         ai.error != null -> "Not installed: ${ai.error}"
         else -> "Not installed"
     }
@@ -193,11 +200,17 @@ private fun SamRow(vm: LightCraftViewModel, ai: AiModelStatus) {
             ai.downloading -> LcButton("Cancel", onClick = vm::cancelAiDownload)
             ai.installed -> LcButton("Delete") { confirm = "delete" }
             enough -> {
-                if (ai.done > 0) {
-                    LcButton("Delete Partial") { confirm = "delete" }
+                LcButton("Import Files") { pick.launch(arrayOf("*/*")) }
+                Spacer(Modifier.width(8.dp))
+                LcButton(if (noSource) "Set Up Download" else "Source") { confirm = "source" }
+                if (!noSource) {
                     Spacer(Modifier.width(8.dp))
+                    if (ai.done > 0) {
+                        LcButton("Delete Partial") { confirm = "delete" }
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    LcButton(if (ai.done > 0) "Resume" else "Download", on = true) { confirm = "download" }
                 }
-                LcButton(if (ai.done > 0) "Resume" else "Download", on = true) { confirm = "download" }
             }
         }
     }
@@ -210,6 +223,7 @@ private fun SamRow(vm: LightCraftViewModel, ai: AiModelStatus) {
             Lc.accent,
             onYes = vm::downloadAiModel,
         ) { confirm = null }
+        "source" -> SourceDialog(source, onSave = { t, m -> vm.setSamSource(t, m) }) { confirm = null }
         "delete" -> Confirm(
             "Delete SAM 3?",
             "This frees ${gb(ai.sizeBytes.coerceAtMost(maxOf(ai.done, ai.sizeBytes)))}. Masks you already made keep working; Object and Describe need the model again.",
@@ -252,4 +266,60 @@ private fun Confirm(title: String, body: String, yes: String, yesColor: androidx
         confirmButton = { TextButton(onClick = { onClose(); onYes() }) { Text(yes, color = yesColor, fontFamily = Inter) } },
         dismissButton = { TextButton(onClick = onClose) { Text("Cancel", color = Lc.label, fontFamily = Inter) } },
     )
+}
+
+/**
+ * Where SAM 3 downloads from. Meta keeps it on Hugging Face behind its licence: a free account,
+ * accepting the licence on the model's page, and a read token pasted here. A mirror address (an
+ * https base holding model.safetensors, vocab.json and merges.txt) works too.
+ */
+@Composable
+private fun SourceDialog(current: ai.storyteller.lightcraft.android.SamSource, onSave: (String, String) -> Unit, onClose: () -> Unit) {
+    val context = LocalContext.current
+    var token by remember { mutableStateOf(current.token) }
+    var mirror by remember { mutableStateOf(current.mirror) }
+    fun open(url: String) {
+        runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+    }
+    AlertDialog(
+        onDismissRequest = onClose,
+        containerColor = Lc.chrome,
+        title = { Text("SAM 3 download", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Lc.text) },
+        text = {
+            Column {
+                Text("1. Sign in to Hugging Face and accept Meta's licence on the SAM 3 page.", fontFamily = Inter, fontSize = 13.sp, color = Lc.label)
+                Row(Modifier.padding(vertical = 6.dp)) { LcButton("Open SAM 3 Page") { open("https://huggingface.co/facebook/sam3") } }
+                Text("2. Make a token with Read access and paste it here.", fontFamily = Inter, fontSize = 13.sp, color = Lc.label)
+                Row(Modifier.padding(vertical = 6.dp)) { LcButton("Open Tokens Page") { open("https://huggingface.co/settings/tokens") } }
+                Field(token, { token = it }, "hf_…", secret = true)
+                Spacer(Modifier.height(12.dp))
+                Text("Or a mirror (optional): an https address holding the three files.", fontFamily = Inter, fontSize = 12.sp, color = Lc.dim)
+                Spacer(Modifier.height(6.dp))
+                Field(mirror, { mirror = it }, "https://…")
+                Spacer(Modifier.height(8.dp))
+                Text("The token stays in LightCraft's private settings and is sent only to the download address.", fontFamily = Inter, fontSize = 11.sp, color = Lc.dim)
+            }
+        },
+        confirmButton = { TextButton(onClick = { onClose(); onSave(token, mirror) }) { Text("Save", color = Lc.accent, fontFamily = Inter) } },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel", color = Lc.label, fontFamily = Inter) } },
+    )
+}
+
+@Composable
+private fun Field(value: String, onChange: (String) -> Unit, hint: String, secret: Boolean = false) {
+    Box(
+        Modifier.fillMaxWidth().height(38.dp).background(Lc.field, RoundedCornerShape(4.dp)).border(1.dp, Lc.fieldBorder, RoundedCornerShape(4.dp)).padding(horizontal = 10.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        if (value.isEmpty()) Text(hint, fontFamily = Inter, fontSize = 14.sp, color = Lc.dim)
+        androidx.compose.foundation.text.BasicTextField(
+            value = value,
+            onValueChange = { onChange(it.take(300)) },
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = Inter, fontSize = 14.sp, color = Lc.text),
+            cursorBrush = androidx.compose.ui.graphics.SolidColor(Lc.accent),
+            visualTransformation = if (secret) androidx.compose.ui.text.input.PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
 }

@@ -739,14 +739,27 @@ internal fun Toggle(label: String, on: Boolean, onChange: (Boolean) -> Unit) {
 private fun PresetPanel(vm: LightCraftViewModel) {
     val presets by vm.presets.collectAsStateWithLifecycle()
     val thumbs by vm.presetThumbs.collectAsStateWithLifecycle()
+    val applied by vm.lastPreset.collectAsStateWithLifecycle()
+    val amount by vm.presetAmount.collectAsStateWithLifecycle()
     val groups = presets.groupBy { it.group.ifEmpty { "Presets" } }
     val open = rememberSaveable(saver = openSaver) { mutableStateMapOf<String, Boolean>() }
-    var applied by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(groups.keys.firstOrNull()) { groups.keys.firstOrNull()?.let { if (open.isEmpty()) open[it] = true } }
     val visible = groups.filterKeys { open[it] == true }.values.flatten().map { it.id }
-    LaunchedEffect(visible) { vm.loadPresetThumbs(visible) }
+    // previews are dropped after an edit: ask again whenever they are missing
+    LaunchedEffect(visible, thumbs.isEmpty()) { vm.loadPresetThumbs(visible) }
     Column(Modifier.fillMaxWidth()) {
-        PanelTitle("Presets")
+        PanelTitle("Presets") { if (applied != null) LcButton("Remove", onClick = vm::removePreset) }
+        if (applied != null) {
+            val name = presets.firstOrNull { it.id == applied }?.name ?: "Preset"
+            LcSlider(
+                SliderSpec("amount", "$name Amount", amount, 0f, 200f, 100f, unit = "%"),
+                SliderActions(change = { _, v -> vm.setPresetAmount(v) }, done = vm::commitPresetAmount, reset = { vm.setPresetAmount(100f); vm.commitPresetAmount() }),
+            )
+            Text(
+                "Tap another preset to try it instead; tap this one again to take it off.",
+                fontFamily = Inter, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp),
+            )
+        }
         groups.forEach { (group, list) ->
             Section(group, group, open) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp)) {
@@ -754,7 +767,7 @@ private fun PresetPanel(vm: LightCraftViewModel) {
                         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             row.forEach { p ->
                                 val on = applied == p.id
-                                Column(Modifier.weight(1f).clickable { applied = p.id; vm.applyPreset(p.id) }) {
+                                Column(Modifier.weight(1f).clickable { vm.applyPreset(p.id) }) {
                                     Box(
                                         Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(4.dp)).background(Lc.skeleton)
                                             .border(if (on) 2.dp else 0.dp, if (on) Lc.pick else Color.Transparent, RoundedCornerShape(4.dp)),
