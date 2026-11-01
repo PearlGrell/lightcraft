@@ -19,6 +19,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** The open photo's treatment (`color` / `bw`), profile and white-balance mode. */
+data class Look(val treatment: String = "color", val profile: String = "lc.color", val profileAmount: Float = 100f, val wb: String = "asShot")
+
 /** A develop preset (`presets.list`). */
 data class Preset(val id: String, val name: String, val group: String)
 
@@ -26,18 +29,80 @@ data class Preset(val id: String, val name: String, val group: String)
 data class CurvePoint(val x: Float, val y: Float)
 
 /** A mask of the photo (`develop.get` → `masks`) with its local adjustments. */
-data class MaskInfo(val id: Int, val name: String, val adjust: Map<String, Float>) {
+data class MaskInfo(val id: Int, val name: String, val adjust: Map<String, Float>, val components: List<MaskComponent> = emptyList()) {
     companion object {
         fun fromJson(o: JSONObject): MaskInfo {
             val a = o.optJSONObject("adjust")
             val adjust = a?.keys()?.asSequence()?.associateWith { a.optDouble(it, 0.0).toFloat() } ?: emptyMap()
-            return MaskInfo(o.optInt("id"), o.optString("name", "Mask"), adjust)
+            val c = o.optJSONArray("components")
+            val components = (0 until (c?.length() ?: 0)).mapNotNull { i ->
+                c?.optJSONObject(i)?.let { MaskComponent(it.optJSONObject("shape")?.optString("kind", "") ?: "", it.optString("op", "add"), it.optBoolean("invert")) }
+            }
+            return MaskInfo(o.optInt("id"), o.optString("name", "Mask"), adjust, components)
         }
     }
 }
 
+/** One selection of a mask (`kind`: radial, linear, brush, sky, object…) and how it combines. */
+data class MaskComponent(val kind: String, val op: String, val invert: Boolean) {
+    val label: String get() = when (kind) {
+        "radial" -> "Radial Gradient"
+        "linear" -> "Linear Gradient"
+        "brush" -> "Brush"
+        "luminanceRange" -> "Luminance Range"
+        "colorRange" -> "Color Range"
+        "sky" -> "Sky"
+        "subject", "seg" -> "Subject"
+        "object" -> "Object"
+        "prompt" -> "Describe"
+        else -> kind.replaceFirstChar { it.uppercase() }.ifEmpty { "Selection" }
+    }
+}
+
 /** Which photos the library grid shows. */
-enum class LibraryFilter(val label: String) { All("All"), Edited("Edited"), Favourites("Favourites") }
+sealed class LibrarySource(val title: String) {
+    data object All : LibrarySource("All Photos")
+    data object Recent : LibrarySource("Recently Added")
+    data object Picks : LibrarySource("Picks")
+    data object Edited : LibrarySource("Edited")
+    data object Deleted : LibrarySource("Recently Deleted")
+    data class Album(val name: String) : LibrarySource(name.ifEmpty { "Other" })
+    data class Year(val year: Int) : LibrarySource(year.toString())
+}
+
+/** The grid's layouts, as the desktop's bottom bar offers them. */
+enum class ViewMode { Justified, Square, Single }
+
+enum class SortOrder(val label: String) { Newest("Capture time, newest first"), Oldest("Capture time, oldest first"), Name("File name") }
+
+/** What the grid shows for [source], [query] and [sort]. Pure, for the screen and tests. */
+fun libraryView(
+    photos: List<GalleryImage>,
+    trash: List<GalleryImage>,
+    source: LibrarySource,
+    query: String,
+    sort: SortOrder,
+    markOf: (GalleryImage) -> Mark?,
+    now: Long = System.currentTimeMillis(),
+): List<GalleryImage> {
+    val zone = java.time.ZoneId.systemDefault()
+    val base = when (source) {
+        LibrarySource.All -> photos
+        LibrarySource.Recent -> photos.filter { now - it.added <= 30L * 24 * 3600 * 1000 }
+        LibrarySource.Picks -> photos.filter { markOf(it)?.flag == "pick" }
+        LibrarySource.Edited -> photos.filter { markOf(it)?.edited == true }
+        LibrarySource.Deleted -> trash
+        is LibrarySource.Album -> photos.filter { it.album == source.name }
+        is LibrarySource.Year -> photos.filter { java.time.Instant.ofEpochMilli(it.taken).atZone(zone).year == source.year }
+    }
+    val q = query.trim().lowercase()
+    val found = if (q.isEmpty()) base else base.filter { it.name.lowercase().contains(q) || it.album.lowercase().contains(q) }
+    return when (sort) {
+        SortOrder.Newest -> found.sortedByDescending { it.taken }
+        SortOrder.Oldest -> found.sortedBy { it.taken }
+        SortOrder.Name -> found.sortedBy { it.name.lowercase() }
+    }
+}
 
 /** Export choices of the export sheet. */
 data class ExportChoice(val format: String = "jpeg", val quality: Int = 90, val longEdge: Int = 0) {
@@ -140,8 +205,21 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     /** Edited / favourite / rating of the gallery files the library knows, by file path. */
     val marks: StateFlow<Map<String, Mark>> = _marks.asStateFlow()
 
-    private val _filter = MutableStateFlow(LibraryFilter.All)
-    val filter: StateFlow<LibraryFilter> = _filter.asStateFlow()
+    private val _source = MutableStateFlow<LibrarySource>(LibrarySource.All)
+    val source: StateFlow<LibrarySource> = _source.asStateFlow()
+
+    private val _query = MutableStateFlow("")
+    val query: StateFlow<String> = _query.asStateFlow()
+
+    private val _viewMode = MutableStateFlow(ViewMode.Justified)
+    val viewMode: StateFlow<ViewMode> = _viewMode.asStateFlow()
+
+    private val _sort = MutableStateFlow(SortOrder.Newest)
+    val sort: StateFlow<SortOrder> = _sort.asStateFlow()
+
+    private val _trash = MutableStateFlow<List<GalleryImage>>(emptyList())
+    /** Photos in the phone's trash (Android 11+): the desktop's Recently Deleted. */
+    val trash: StateFlow<List<GalleryImage>> = _trash.asStateFlow()
 
     private val _selection = MutableStateFlow<Set<Long>>(emptySet())
     /** Gallery ids selected in the library (long-press starts a selection). */
@@ -171,7 +249,19 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     val shareOriginals = Channel<List<android.net.Uri>>(Channel.BUFFERED)
 
     /** Gallery images to delete: MainActivity asks Android (which confirms) and reports back. */
-    val deletions = Channel<List<GalleryImage>>(Channel.BUFFERED)
+    val deletions = Channel<Pair<List<GalleryImage>, DeleteMode>>(Channel.BUFFERED)
+
+    private val _look = MutableStateFlow(Look())
+    /** Treatment, profile and white-balance mode of the open photo (`develop.get`). */
+    val look: StateFlow<Look> = _look.asStateFlow()
+
+    private val _profiles = MutableStateFlow<List<Preset>>(emptyList())
+    /** The engine's profiles (`profiles.list`), as presets: id, name, group. */
+    val profiles: StateFlow<List<Preset>> = _profiles.asStateFlow()
+
+    private val _wbPicking = MutableStateFlow(false)
+    /** The white-balance selector is armed: the next tap on the photo picks a neutral point. */
+    val wbPicking: StateFlow<Boolean> = _wbPicking.asStateFlow()
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
@@ -223,10 +313,11 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         }
         refreshMarks()
         viewModelScope.launch(Dispatchers.IO) {
+            _trash.value = runCatching { Gallery.trashed(app) }.getOrDefault(emptyList())
             runCatching { Gallery.images(app) }
                 .onSuccess {
                     _photos.value = it
-                    val known = it.mapTo(HashSet()) { g -> g.id }
+                    val known = (it + _trash.value).mapTo(HashSet()) { g -> g.id }
                     _selection.value = _selection.value.filterTo(HashSet()) { id -> id in known }
                 }
                 .onFailure { messages.trySend("Could not read the gallery: ${it.message}") }
@@ -262,6 +353,27 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- editor --------------------------------------------------------------------------------
 
+    private val _strip = MutableStateFlow<List<GalleryImage>>(emptyList())
+    /** The photos of the library view the editor was opened from: its filmstrip. */
+    val strip: StateFlow<List<GalleryImage>> = _strip.asStateFlow()
+
+    /** The gallery image being edited (its id), for the filmstrip. */
+    val editingImageId: Long? get() = editingImage?.id
+
+    fun open(image: GalleryImage, strip: List<GalleryImage>) {
+        if (strip.isNotEmpty()) _strip.value = strip.take(2000)
+        open(image)
+    }
+
+    /** Another photo of the filmstrip: leave this one (its thumbnail refreshes) and open that. */
+    fun switchTo(image: GalleryImage) {
+        if (image.id == editingImage?.id) return
+        val tab = _tab.value
+        close()
+        open(image)
+        if (tab != MainTab.Edit) selectTab(tab)
+    }
+
     fun open(image: GalleryImage) {
         _preview.value = thumbs.get(image.id)
         _before.value = null
@@ -280,6 +392,8 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 _editing.value = photo
                 e.execute("library.select", JSONObject().put("ids", JSONArray().put(photo)).put("active", photo))
                 loadState()
+                loadInfoNow()
+                if (_profiles.value.isEmpty()) loadProfiles(e)
                 requestRender(draft = false)
             } catch (t: Throwable) {
                 Log.w(tag, "open ${image.name}", t)
@@ -317,7 +431,6 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         if (_tab.value == MainTab.Remove) endCutout()
         _tab.value = tab
         _tool.value = when (tab) {
-            MainTab.Edit -> Tools.edit[1]
             MainTab.Remove -> Tools.remove[0]
             else -> null
         }
@@ -333,7 +446,6 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     /** A tool of the row above the bottom bar. */
     fun selectTool(tool: Tool) {
         when (_tab.value) {
-            MainTab.Quick -> quickAction(tool.id)
             MainTab.Masking -> maskTool(tool)
             MainTab.Remove -> removeAction(tool)
             else -> if (tool.kind == ToolKind.Action) {
@@ -344,7 +456,8 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun quickAction(id: String) {
+    /** The one-tap looks of the Masking panel ("pop", "sky") and the Edit header's Auto / B&W / Reset. */
+    fun quickAction(id: String) {
         when (id) {
             "auto" -> runEdit("develop.auto")
             "bw" -> runEdit("develop.treatment")
@@ -521,7 +634,10 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 "subject" -> subjectMask("Subject", invert = false)
                 "background" -> subjectMask("Background", invert = true)
                 "sky" -> withEngine { e -> e.execute("mask.add", JSONObject().put("kind", "sky").put("name", "Sky")) }
-                else -> withEngine { e -> e.execute("mask.add", JSONObject().put("kind", kind).put("name", kind.replaceFirstChar { it.uppercase() })) }
+                else -> withEngine { e ->
+                    val name = mapOf("linear" to "Linear Gradient", "radial" to "Radial Gradient", "luminanceRange" to "Luminance Range")[kind] ?: kind.replaceFirstChar { it.uppercase() }
+                    e.execute("mask.add", JSONObject().put("kind", kind).put("name", name))
+                }
             }
             afterEdit(selectNewest = true)
         }
@@ -561,6 +677,22 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             }
             requestRender(draft = true)
         }
+    }
+
+    /** Add (or subtract) a selection of [kind] to the selected mask, as the desktop's Add / Subtract. */
+    fun addComponent(op: String, kind: String) {
+        val id = _activeMask.value ?: return
+        if (kind == "subject" || kind == "background") {
+            messages.trySend("Subject and Background make their own masks; add them from Create New Mask")
+            return
+        }
+        runEdit("mask.addComponent", JSONObject().put("id", id).put("op", op).put("kind", kind))
+    }
+
+    /** invert / delete one selection of the selected mask. */
+    fun componentAction(index: Int, action: String) {
+        val id = _activeMask.value ?: return
+        runEdit("mask.component", JSONObject().put("id", id).put("component", index).put("action", action))
     }
 
     fun maskCommand(command: String) {
@@ -676,8 +808,21 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setFilter(f: LibraryFilter) {
-        _filter.value = f
+    fun setSource(s: LibrarySource) {
+        _source.value = s
+        _selection.value = emptySet()
+    }
+
+    fun setQuery(q: String) {
+        _query.value = q.take(100)
+    }
+
+    fun setViewMode(m: ViewMode) {
+        _viewMode.value = m
+    }
+
+    fun setSort(o: SortOrder) {
+        _sort.value = o
     }
 
     fun toggleSelected(image: GalleryImage) {
@@ -695,7 +840,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun selectedImages(): List<GalleryImage> {
         val s = _selection.value
-        return _photos.value.filter { it.id in s }
+        return (_photos.value + _trash.value).filter { it.id in s }.distinctBy { it.id }
     }
 
     fun shareSelected() {
@@ -703,36 +848,69 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         if (images.isNotEmpty()) shareOriginals.trySend(images.map { it.uri })
     }
 
-    /** Delete the selected photos from the phone (Android asks to confirm). */
+    /**
+     * Delete the selected photos: into the phone's trash (Recently Deleted, 30 days) on Android 11+,
+     * for good before. Android asks to confirm.
+     */
     fun deleteSelected() {
         val images = selectedImages()
-        if (images.isNotEmpty()) deletions.trySend(images)
+        if (images.isNotEmpty()) deletions.trySend(images to if (Gallery.hasTrash) DeleteMode.Trash else DeleteMode.Delete)
     }
 
-    /** Delete the photo being edited from the phone. */
+    /** Recently Deleted: put the selected photos back. */
+    fun restoreSelected() {
+        val images = selectedImages()
+        if (images.isNotEmpty()) deletions.trySend(images to DeleteMode.Restore)
+    }
+
+    /** Recently Deleted: delete the selected photos for good (and their edits). */
+    fun deleteSelectedForever() {
+        val images = selectedImages()
+        if (images.isNotEmpty()) deletions.trySend(images to DeleteMode.Delete)
+    }
+
+    /** Delete the photo being edited (to the trash where there is one). */
     fun deleteCurrent() {
-        editingImage?.let { deletions.trySend(listOf(it)) }
+        editingImage?.let { deletions.trySend(listOf(it) to if (Gallery.hasTrash) DeleteMode.Trash else DeleteMode.Delete) }
     }
 
     /**
-     * After Android's answer to a delete: drop what is really gone from the library (and its
-     * edits), leave the editor if its photo went, and re-read the gallery.
+     * After Android's answer: photos deleted for good leave the library with their edits; trashed
+     * ones keep their edits (they may come back). The editor closes if its photo went.
      */
-    fun onDeleteFinished(images: List<GalleryImage>) {
+    fun onDeleteFinished(images: List<GalleryImage>, mode: DeleteMode) {
         val app = getApplication<Application>()
         viewModelScope.launch(Dispatchers.IO) {
+            val trashedBefore = _trash.value.mapTo(HashSet()) { it.id }
             val gone = images.filter { Gallery.isGone(app, it) }
-            if (gone.isEmpty()) return@launch
-            gone.forEach { thumbs.remove(it.id); opened.remove(it.id) }
-            withContext(commands) {
-                withEngine { e -> e.forgetPaths(gone.flatMap { keysOf(it) }) }
-                gone.forEach { g -> copyOf(g).delete() }
+            if (gone.isNotEmpty()) {
+                gone.forEach { thumbs.remove(it.id); opened.remove(it.id) }
+                withContext(commands) {
+                    withEngine { e -> e.forgetPaths(gone.flatMap { keysOf(it) }) }
+                    gone.forEach { g -> copyOf(g).delete() }
+                }
+            }
+            val nowTrash = runCatching { Gallery.trashed(app) }.getOrDefault(emptyList()).mapTo(HashSet()) { it.id }
+            val moved = when (mode) {
+                DeleteMode.Trash -> images.count { it.id in nowTrash }
+                DeleteMode.Restore -> images.count { it.id in trashedBefore && it.id !in nowTrash }
+                DeleteMode.Delete -> gone.size
             }
             withContext(Dispatchers.Main) {
-                if (editingImage != null && gone.any { it.id == editingImage?.id }) close()
-                _selection.value = _selection.value - gone.mapTo(HashSet()) { it.id }
+                val left = if (mode == DeleteMode.Restore) moved > 0 else (gone.isNotEmpty() || moved > 0)
+                if (left && mode != DeleteMode.Restore && editingImage != null && images.any { it.id == editingImage?.id }) close()
+                if (moved > 0 || gone.isNotEmpty()) _selection.value = emptySet()
             }
-            messages.trySend(if (gone.size == 1) "Photo deleted" else "${gone.size} photos deleted")
+            if (moved > 0) {
+                val n = if (moved == 1) "1 photo" else "$moved photos"
+                messages.trySend(
+                    when (mode) {
+                        DeleteMode.Trash -> "$n moved to Recently Deleted"
+                        DeleteMode.Restore -> "$n restored"
+                        DeleteMode.Delete -> "$n deleted"
+                    },
+                )
+            }
             refreshGallery()
         }
     }
@@ -744,18 +922,39 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             .getOrNull()
     }
 
-    /** Favourite (pick flag) the selected photos, or clear it when all of them already are. */
-    fun favouriteSelected() {
+    /** Rate the selected photos 0–5 stars (`photo.rate`). */
+    fun rateSelected(rating: Int) = markSelected("photo.rate", JSONObject().put("rating", rating.coerceIn(0, 5)))
+
+    /** Flag the selected photos `pick`, `reject` or `none` (`photo.flag`); the same flag again clears it. */
+    fun flagSelected(flag: String) {
         val images = selectedImages().ifEmpty { return }
         val marks = _marks.value
-        val on = !images.all { markOf(it, marks)?.favourite == true }
+        val f = if (images.all { markOf(it, marks)?.flag == flag }) "none" else flag
+        markSelected("photo.flag", JSONObject().put("flag", f))
+    }
+
+    private fun markSelected(command: String, params: JSONObject) {
+        val images = selectedImages().ifEmpty { return }
         viewModelScope.launch(commands) {
             withEngine { e ->
                 val ids = photosFor(e, images)
-                if (ids.isNotEmpty()) e.execute("photo.flag", JSONObject().put("ids", JSONArray(ids)).put("flag", if (on) "pick" else "none"))
+                if (ids.isNotEmpty()) e.execute(command, params.put("ids", JSONArray(ids)))
                 _marks.value = e.galleryMarks()
             }
-            messages.trySend(if (on) "Added to Favourites" else "Removed from Favourites")
+        }
+    }
+
+    /** Copy Edit Settings from the one selected photo (as the desktop's bottom-bar button). */
+    fun copyFromSelected() {
+        val image = selectedImages().singleOrNull() ?: return
+        viewModelScope.launch(commands) {
+            withEngine { e ->
+                val id = photosFor(e, listOf(image)).firstOrNull() ?: return@withEngine
+                e.execute("library.select", JSONObject().put("ids", JSONArray().put(id)).put("active", id))
+                e.execute("develop.copy")
+                _copied.value = true
+                messages.trySend("Edit settings copied")
+            }
         }
     }
 
@@ -793,11 +992,12 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     fun pasteEdits() = runEdit("develop.paste")
 
-    fun setFavourite(on: Boolean) {
+    /** The open photo's flag: `pick`, `reject` or `none`. */
+    fun setFlag(flag: String) {
         val photo = _editing.value ?: return
         viewModelScope.launch(commands) {
             withEngine { e ->
-                e.execute("photo.flag", JSONObject().put("ids", JSONArray().put(photo)).put("flag", if (on) "pick" else "none"))
+                e.execute("photo.flag", JSONObject().put("ids", JSONArray().put(photo)).put("flag", flag))
                 _marks.value = e.galleryMarks()
             }
             loadInfoNow()
@@ -848,6 +1048,40 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun autoStraighten() = runEdit("crop.autoStraighten")
+
+    private fun loadProfiles(e: Engine) {
+        val list = runCatching { e.execute("profiles.list") as? JSONArray }.getOrNull() ?: return
+        _profiles.value = (0 until list.length()).mapNotNull { i ->
+            list.optJSONObject(i)?.let { Preset(it.optString("id"), it.optString("name"), it.optString("group", "")) }
+        }.filter { it.id.isNotEmpty() }
+    }
+
+    fun setProfile(id: String) = runEdit("develop.profile", JSONObject().put("id", id))
+
+    /** Color or B&W, as the desktop's treatment buttons. */
+    fun setTreatment(bw: Boolean) {
+        if ((_look.value.treatment == "bw") != bw) runEdit("develop.treatment")
+    }
+
+    /** A white-balance preset: asShot, auto, daylight, cloudy, shade, tungsten, fluorescent, flash. */
+    fun setWb(mode: String) = runEdit("develop.wb", JSONObject().put("mode", mode))
+
+    fun armWbPicker(on: Boolean) {
+        _wbPicking.value = on
+    }
+
+    /** The white-balance selector's tap: [u], [v] over the shown photo. */
+    fun pickWb(u: Float, v: Float) {
+        val photo = _editing.value ?: return
+        _wbPicking.value = false
+        viewModelScope.launch(commands) {
+            withEngine { e ->
+                val (x, y) = e.viewToImage(photo, u, v) ?: return@withEngine
+                e.execute("develop.wbPick", JSONObject().put("x", x.toDouble()).put("y", y.toDouble()))
+            }
+            afterEdit()
+        }
+    }
 
     fun upright(mode: String) = runEdit("geometry.upright", JSONObject().put("mode", mode))
 
@@ -1072,6 +1306,12 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             _controls.value = (0 until all.length()).mapNotNull { i -> all.optJSONObject(i)?.let { runCatching { Control.fromJson(it) }.getOrNull() } }
         }
         val d = runCatching { e.execute("develop.get") as? JSONObject }.getOrNull() ?: return
+        _look.value = Look(
+            treatment = d.optString("treatment", "color"),
+            profile = d.optJSONObject("profile")?.optString("id", "lc.color") ?: "lc.color",
+            profileAmount = d.optJSONObject("profile")?.optDouble("amount", 100.0)?.toFloat() ?: 100f,
+            wb = d.optJSONObject("wb")?.optString("mode", "asShot") ?: "asShot",
+        )
         d.optJSONObject("curve")?.let { c ->
             _curves.value = listOf("master", "red", "green", "blue").associateWith { ch ->
                 val pts = c.optJSONArray(ch)

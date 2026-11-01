@@ -131,7 +131,7 @@ fun Dial(
                 val a1 = angleOf(spec.value, spec)
                 if (spec.changed) {
                     drawArc(
-                        if (selected) Lc.accent else Lc.accent.copy(alpha = 0.85f),
+                        if (selected) Lc.pick else Lc.label,
                         minOf(a0, a1), abs(a1 - a0), false, topLeft, arcSize,
                         style = Stroke(stroke, cap = StrokeCap.Round),
                     )
@@ -144,7 +144,7 @@ fun Dial(
                     val inner = r - 5.dp.toPx()
                     val outer = r - 2.5.dp.toPx()
                     drawLine(
-                        Lc.muted,
+                        Lc.dim,
                         Offset(c.x + inner * cos(t).toFloat(), c.y + inner * sin(t).toFloat()),
                         Offset(c.x + outer * cos(t).toFloat(), c.y + outer * sin(t).toFloat()),
                         1.dp.toPx(),
@@ -153,19 +153,21 @@ fun Dial(
                 val t = Math.toRadians(a1.toDouble())
                 val p = Offset(c.x + r * cos(t).toFloat(), c.y + r * sin(t).toFloat())
                 drawCircle(Lc.canvas, 4.5.dp.toPx(), p)
-                drawCircle(if (selected) Lc.accent else Lc.text, 3.dp.toPx(), p)
+                drawCircle(if (selected) Lc.pick else Lc.text, 3.dp.toPx(), p)
             }
             Text(
                 compactValue(spec),
                 style = Numbers,
+                fontFamily = Inter,
                 fontSize = if (compactValue(spec).length > 5) 10.sp else 11.5.sp,
-                color = if (spec.changed) Lc.text else Lc.muted,
+                color = if (spec.changed) Lc.text else Lc.dim,
                 maxLines = 1,
             )
         }
         Spacer(Modifier.height(5.dp))
         Text(
             spec.label,
+            fontFamily = Inter,
             fontSize = 11.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) Lc.text else Lc.label,
@@ -229,7 +231,7 @@ fun ScrubRuler(spec: DialSpec, actions: DialActions, modifier: Modifier = Modifi
     Column(modifier.fillMaxWidth().padding(top = 6.dp, bottom = 2.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(spec.label.uppercase(Locale.ROOT), style = androidx.compose.material3.MaterialTheme.typography.labelSmall, color = Lc.label, modifier = Modifier.weight(1f))
-            Text(spec.text(), style = Numbers, fontSize = 13.sp, color = if (spec.changed) Lc.accent else Lc.text)
+            Text(spec.text(), style = Numbers, fontSize = 13.sp, color = if (spec.changed) Lc.pick else Lc.text)
         }
         Canvas(
             Modifier
@@ -264,9 +266,9 @@ fun ScrubRuler(spec: DialSpec, actions: DialActions, modifier: Modifier = Modifi
             }
             if (spec.min < spec.default && spec.default < spec.max) {
                 val x = cx + (spec.default - spec.value) * pxPerUnit
-                if (x in 0f..size.width) drawCircle(Lc.muted, 2.dp.toPx(), Offset(x, 3.dp.toPx()))
+                if (x in 0f..size.width) drawCircle(Lc.dim, 2.dp.toPx(), Offset(x, 3.dp.toPx()))
             }
-            drawLine(Lc.accent, Offset(cx, 0f), Offset(cx, size.height), 2.dp.toPx())
+            drawLine(Lc.pick, Offset(cx, 0f), Offset(cx, size.height), 2.dp.toPx())
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(Lc.divider))
         Spacer(Modifier.width(1.dp))
@@ -280,10 +282,4 @@ private fun compactValue(s: DialSpec): String {
     val d = if (abs(s.value) >= 1000f) 0 else s.decimals.coerceAtMost(2)
     val text = String.format(Locale.ROOT, "%.${d}f", s.value)
     return if (s.min < 0f && s.value > 0f && text.any { it in '1'..'9' }) "+$text" else text
-}
-
-internal fun formatValue(v: Float, min: Float, decimals: Int, unit: String): String {
-    val text = String.format(Locale.ROOT, "%.${decimals.coerceIn(0, 3)}f", v)
-    val signed = if (min < 0 && v > 0 && text.any { it in '1'..'9' }) "+$text" else text
-    return if (unit.isEmpty()) signed else "$signed $unit".replace(" °", "°").replace(" %", "%")
 }

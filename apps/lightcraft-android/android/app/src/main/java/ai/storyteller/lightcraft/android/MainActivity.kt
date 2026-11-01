@@ -25,27 +25,29 @@ import ai.storyteller.lightcraft.android.ui.LightCraftTheme
 class MainActivity : ComponentActivity() {
     private val vm: LightCraftViewModel by viewModels()
 
-    /** The photos of the delete in progress (Android's confirmation is showing). */
+    /** The photos of the request in progress (Android's confirmation is showing) and what it asks. */
     private var deleting: List<GalleryImage> = emptyList()
+    private var deleteMode = DeleteMode.Trash
 
     private val deleteLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         // Android 10 asks file by file: after a yes, carry on with the rest
-        if (Build.VERSION.SDK_INT < 30 && result.resultCode == RESULT_OK) {
-            startDelete(deleting)
+        if (Build.VERSION.SDK_INT < 30 && result.resultCode == RESULT_OK && deleteMode == DeleteMode.Delete) {
+            startDelete(deleting, deleteMode)
         } else {
-            vm.onDeleteFinished(deleting)
+            vm.onDeleteFinished(deleting, deleteMode)
             deleting = emptyList()
         }
     }
 
-    private fun startDelete(images: List<GalleryImage>) {
+    private fun startDelete(images: List<GalleryImage>, mode: DeleteMode) {
         deleting = images
-        val left = images.filterNot { Gallery.isGone(this, it) }
-        val sender = runCatching { Gallery.deleteRequest(this, left) }
+        deleteMode = mode
+        val left = if (mode == DeleteMode.Delete) images.filterNot { Gallery.isGone(this, it) } else images
+        val sender = runCatching { Gallery.request(this, left, mode) }
             .onFailure { vm.messages.trySend("Could not delete: ${it.message}") }
             .getOrNull()
         if (sender == null) {
-            vm.onDeleteFinished(images)
+            vm.onDeleteFinished(images, mode)
             deleting = emptyList()
         } else {
             deleteLauncher.launch(IntentSenderRequest.Builder(sender).build())
@@ -75,7 +77,7 @@ class MainActivity : ComponentActivity() {
                     for (m in vm.messages) snackbar.showSnackbar(m)
                 }
                 LaunchedEffect(Unit) {
-                    for (images in vm.deletions) startDelete(images)
+                    for ((images, mode) in vm.deletions) startDelete(images, mode)
                 }
                 LaunchedEffect(Unit) {
                     for (file in vm.shares) {

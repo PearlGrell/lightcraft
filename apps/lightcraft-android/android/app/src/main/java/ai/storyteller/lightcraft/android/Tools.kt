@@ -13,6 +13,7 @@ data class Control(
     val decimals: Int,
     val value: Float,
     val unit: String = "",
+    val track: Track = Track(),
 ) {
     companion object {
         fun fromJson(o: JSONObject): Control {
@@ -31,6 +32,26 @@ data class Control(
                     "wb.temp" -> "K"
                     else -> ""
                 },
+                track = Track.fromJson(o.optJSONObject("track")),
+            )
+        }
+    }
+}
+
+/**
+ * How a slider's track is painted, as the engine's control spec says (`Track` in lightcraft-develop):
+ * plain, centred, the white-balance gradients, a two-colour gradient, a colour band's hue /
+ * saturation / luminance, or the full hue rainbow.
+ */
+data class Track(val kind: String = "plain", val from: String? = null, val to: String? = null, val band: Int = 0) {
+    companion object {
+        fun fromJson(o: JSONObject?): Track {
+            if (o == null) return Track()
+            return Track(
+                kind = o.optString("kind", "plain"),
+                from = o.optString("from").takeIf { it.isNotEmpty() },
+                to = o.optString("to").takeIf { it.isNotEmpty() },
+                band = o.optInt("band", 0).coerceIn(0, 7),
             )
         }
     }
@@ -46,7 +67,8 @@ data class Group(val title: String, val prefixes: List<String>, val exclude: Lis
 }
 
 /** The six tabs of the editor's bottom bar. */
-enum class MainTab(val label: String) { Quick("Quick actions"), Presets("Presets"), Crop("Crop"), Edit("Edit"), Masking("Masking"), Remove("Remove") }
+/** The editor's tools, as the desktop's tool rail orders them. */
+enum class MainTab(val label: String) { Edit("Edit"), Crop("Crop"), Remove("Remove"), Masking("Masking"), Presets("Presets") }
 
 enum class ToolKind { Sliders, Action, Curve, Brush, Object, Describe }
 
@@ -57,7 +79,7 @@ data class Tool(val id: String, val label: String, val kind: ToolKind = ToolKind
 data class Aspect(val label: String, val ratio: Float)
 
 /** A mask's local adjustment slider (`mask.adjust` value names). */
-data class LocalSlider(val key: String, val label: String, val min: Float, val max: Float, val decimals: Int = 0)
+data class LocalSlider(val key: String, val label: String, val min: Float, val max: Float, val decimals: Int = 0, val track: Track = Track("centered"))
 
 object Tools {
     val edit = listOf(
@@ -87,27 +109,19 @@ object Tools {
         Tool("geometry", "Geometry", groups = listOf(Group("Transform", listOf("geometry.")))),
     )
 
-    val quick = listOf(
-        Tool("auto", "Auto", ToolKind.Action),
-        Tool("pop", "Subject pop", ToolKind.Action),
-        Tool("sky", "Blue sky", ToolKind.Action),
-        Tool("bw", "B&W", ToolKind.Action),
-        Tool("cutout", "Remove BG", ToolKind.Action),
-        Tool("reset", "Reset", ToolKind.Action),
-    )
-
     /** The Masking row; Object and Describe (SAM 3) only when the build has AI masks. */
     fun masking(ai: Boolean) = listOfNotNull(
         Tool("subject", "Subject", ToolKind.Action),
-        Tool("background", "Background", ToolKind.Action),
         Tool("sky", "Sky", ToolKind.Action),
-        if (ai) Tool("object", "Object", ToolKind.Object) else null,
-        if (ai) Tool("describe", "Describe", ToolKind.Describe) else null,
+        Tool("background", "Background", ToolKind.Action),
         Tool("brush", "Brush", ToolKind.Brush),
-        Tool("dodge", "Dodge", ToolKind.Brush),
-        Tool("burn", "Burn", ToolKind.Brush),
         Tool("linear", "Linear", ToolKind.Action),
         Tool("radial", "Radial", ToolKind.Action),
+        Tool("luminanceRange", "Luminance", ToolKind.Action),
+        if (ai) Tool("object", "Object", ToolKind.Object) else null,
+        if (ai) Tool("describe", "Describe", ToolKind.Describe) else null,
+        Tool("dodge", "Dodge", ToolKind.Brush),
+        Tool("burn", "Burn", ToolKind.Brush),
     )
 
     val remove = listOf(
@@ -119,21 +133,25 @@ object Tools {
         Tool("export", "Save PNG", ToolKind.Action),
     )
 
+    /** A mask's local sliders, in the desktop's order and with its tracks (`panels/masking.rs`, `LOCAL`). */
     val local = listOf(
+        LocalSlider("temp", "Temp", -100f, 100f, track = Track("temp")),
+        LocalSlider("tint", "Tint", -100f, 100f, track = Track("tint")),
         LocalSlider("exposure", "Exposure", -4f, 4f, 2),
         LocalSlider("contrast", "Contrast", -100f, 100f),
         LocalSlider("highlights", "Highlights", -100f, 100f),
         LocalSlider("shadows", "Shadows", -100f, 100f),
         LocalSlider("whites", "Whites", -100f, 100f),
         LocalSlider("blacks", "Blacks", -100f, 100f),
-        LocalSlider("temp", "Temp", -100f, 100f),
-        LocalSlider("tint", "Tint", -100f, 100f),
-        LocalSlider("saturation", "Saturation", -100f, 100f),
         LocalSlider("texture", "Texture", -100f, 100f),
         LocalSlider("clarity", "Clarity", -100f, 100f),
         LocalSlider("dehaze", "Dehaze", -100f, 100f),
+        LocalSlider("hue", "Hue", -100f, 100f, track = Track("rainbow")),
+        LocalSlider("saturation", "Saturation", -100f, 100f, track = Track("gradient", "#7a7a7a", "#e04a3a")),
         LocalSlider("sharpness", "Sharpness", -100f, 100f),
         LocalSlider("noise", "Noise", -100f, 100f),
+        LocalSlider("moire", "Moiré", -100f, 100f),
+        LocalSlider("defringe", "Defringe", -100f, 100f),
     )
 
     /** Brush settings: size is a fraction of the long edge, feather and flow percent. */

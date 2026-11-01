@@ -28,6 +28,14 @@ val cargoNdk by tasks.registering(Exec::class) {
     outputs.upToDateWhen { false }
 }
 
+// The UI font is the desktop app's Inter (assets/fonts, OFL), copied into generated resources at
+// build time so the repository keeps one copy of each font file.
+val interFonts by tasks.registering(Copy::class) {
+    from(workspaceDir.resolve("assets/fonts")) { include("Inter-*.ttf") }
+    into(layout.buildDirectory.dir("generated/fontRes/font"))
+    rename { it.lowercase().replace('-', '_') }
+}
+
 android {
     namespace = "ai.storyteller.lightcraft.android"
     compileSdk = 35
@@ -52,6 +60,7 @@ android {
         }
     }
     sourceSets["main"].jniLibs.srcDir(rustJniLibs)
+    sourceSets["main"].res.srcDir(layout.buildDirectory.dir("generated/fontRes"))
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -60,7 +69,7 @@ android {
     buildFeatures { compose = true }
 }
 
-tasks.named("preBuild") { dependsOn(cargoNdk) }
+tasks.named("preBuild") { dependsOn(cargoNdk, interFonts) }
 
 dependencies {
     implementation(libs.androidx.core.ktx)

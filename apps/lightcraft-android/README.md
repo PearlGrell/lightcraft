@@ -17,59 +17,50 @@ exports go through the engine's one encoder (`lightcraft_engine::export`).
 
 ## What works
 
-- **Launch**: the LightCraft lynx on the app's near-black canvas (AndroidX SplashScreen), held
-  until the engine has opened the library (at most ~1.5 s).
-- **Library = the phone's gallery**: after the media permission (`READ_MEDIA_IMAGES`, or storage
-  before Android 13; a clear prompt, and Settings when it was denied for good) the grid shows every
-  image MediaStore has, newest first, in day sections (Today, Yesterday, dates). Opening one imports
-  it in place (`Mobile::photo_for_path`): the original stays where it is and the edits live in the
-  app's catalog. Pinch or the grid button changes density. **All / Edited / Favourites** filters;
-  small badges mark edited and favourite photos (`Mobile::gallery_marks`).
-- **Select, favourite, paste, share, delete**: press and hold a photo to select (tap more, or a
-  day's Select). The bar then favourites (`photo.flag`), pastes copied edits onto the selection
-  (`develop.paste`), shares the originals, or **deletes them from the phone**: Android's own
-  confirmation (`MediaStore.createDeleteRequest`; on Android 10 the app confirms, then the system
-  asks per file it doesn't own). Photos really gone are dropped from the catalog with their edits
-  (`Mobile::forget_paths`). The editor's ⋮ menu deletes the open photo the same way.
-- **Editor** (phone-editor layout): the photo edge to edge (pinch or double-tap to zoom, press and
-  hold for the original, Compare for a draggable before/after split); back, histogram, undo, redo,
-  compare, ⋮ (info and rating, copy / paste edits, reset, delete) and **Export** over it. At the
-  bottom, the open tool's panel, a tool row, and six tabs: **Quick** (Auto, Subject pop, Blue
-  sky, B&W, Remove BG, Reset), **Presets** (live thumbnails, `Mobile::preset_thumbnail`), **Crop**
-  (aspect ratios, **Auto straighten** `crop.autoStraighten`, **Upright** Auto / Level / Vertical
-  `geometry.upright`, rotate, flip, straighten), **Edit** (Auto | Light + Profile + HDR, Color,
-  Curve, Effects, Detail, Optics, Geometry), **Masking** and **Remove**.
-- **Dials, not line sliders** (`ui/Dial.kt`): every value is a rotary dial (a 270° arc, the
-  change from the default in amber, the value in the middle) in a scrolling grid. Drag sideways to
-  turn it (relative to the finger), it clicks into the default with a haptic tick, double-tap
-  resets, a tap opens a **fine ruler** above the grid for exact values; one drag is one undo step.
-  The dials come from the engine's control list (`develop.controls`), grouped by id prefix in
-  `Tools.kt`, so new engine controls appear without app changes.
-- **Histogram** (`Mobile::histogram`, `ui/HistogramView.kt`): luminance and R/G/B, the share of
-  clipped shadows and highlights, and **tonal zones**: drag sideways on Blacks, Shadows, Exposure,
-  Highlights or Whites to move that control.
-- **Tone curve**: Point (`ui/CurveEditor.kt`: RGB, Red, Green, Blue; tap to add, drag, drag off
-  to remove; `develop.curve`) and Parametric (the engine's `curve.*` controls as dials).
-- **Masks** (Masking tab): Subject and Background from ML Kit Subject Segmentation (`Segmenter.kt`,
-  on-device) as engine segmentation masks (`Mobile::add_seg_mask`); Sky (the engine's); **Brush,
-  Dodge and Burn** painted on the photo (`mask.brushStroke`; size, feather, flow, paint / erase;
-  Dodge and Burn start at ±⅓ EV); Linear and Radial gradients. Each mask has local dials, invert
-  and delete. Screen points map to the uncropped photo through `Mobile::view_to_image`.
-- **AI Object and Describe masks (SAM 3)**: tap an object (Add / Remove parts; `mask.add` kind
-  `object`, `mask.objectPoint`) or type what to select (`sky`, `the red car`, `car, road`; kind
-  `prompt`). The engine's SAM 3 runs on the phone's CPU (`lightcraft-mobile` feature `sam`). The
-  model is **not** shipped: it is an optional ~3.4 GB download (Meta's SAM License, not
-  LightCraft's) the app offers, with size and licence, only on phones with 6 GB of memory or more;
-  progress and cancel in the panel (`segment.model.download` / `status` / `cancel`). It lives in
-  the app's private storage. Without it every other feature works.
-- **Remove**: one-tap background removal (ML Kit matte) and a Magic Eraser (tap to erase similar
-  colour; tolerance in CIELAB ΔE, contiguous, sample size, anti-alias, feather, opacity), with undo,
-  reset and transparent PNG export with edge decontamination (`lightcraft-bgremove`).
-- **Export**: a sheet with format (JPEG, PNG, WebP, AVIF), quality and size (full, 4096, 2048,
-  1080 px long edge) through the engine's one exporter; **Save to gallery** writes
-  `Pictures/LightCraft` through MediaStore, **Share** hands the file to the share sheet.
-- **Info**: file, dimensions, format and size, capture time, camera, lens, exposure and place
-  (`photo.inspect`), a 0–5 star rating (`photo.rate`) and favourite.
+The phone UI is the desktop app's design on a phone: the desktop's Midnight colour tokens, its
+Inter font (bundled from `assets/fonts` at build time), its icons (`ui/DeskIcons.kt`, ported
+stroke for stroke from `crates/ui-egui/src/icons.rs`) and its widgets (`ui/Widgets.kt`: the
+gradient-track slider with a hollow thumb, section headers, flyout rows, bordered buttons).
+
+- **Launch**: the LightCraft lynx on the canvas (AndroidX SplashScreen) until the library is open.
+- **Library = the phone's gallery**, laid out as the desktop's library: a **sidebar** (drawer) with
+  My Photos (All Photos, Recently Added, Picks, Edited), Albums (the phone's folders), By Date and
+  **Recently Deleted**; **Search Photos** and a rating / flag **filter** on the top bar; the
+  **justified grid** (photos at their own shape) with stars, pick / reject flags and an edited mark;
+  the bottom bar's view modes (justified, square, one per row), sort, and a thumbnail-size slider
+  (or pinch). Press and hold to select: rate 0–5 stars, flag pick / reject, **Copy Edit
+  Settings** / Paste, share, and **delete** (to Android's trash, Recently Deleted, on Android 11+:
+  restore or delete for good there; photos deleted for good leave the catalog with their edits,
+  `Mobile::forget_paths`). Opening a photo imports it in place (`Mobile::photo_for_path`).
+- **Editor**, as the desktop's develop view: a top bar (library, file name, undo, redo, before /
+  after, export, more: info and rating, copy / paste edit settings, reset, delete), the photo
+  (pinch or double-tap to zoom, press and hold for the original, a draggable before / after
+  split), the **filmstrip** (toggle on the rail), the panel (drag its handle to resize, tap to fold
+  it) and the **tool rail**: Edit, Crop, Remove, Masking, Presets.
+- **Edit panel** (the desktop's right panel): the **histogram** (R, G, B over luminance, clipping
+  corners; drag a zone to move Blacks, Shadows, Exposure, Highlights or Whites; tap the camera line
+  to fold it) over **ISO, focal length, aperture and shutter**; Edit with Auto, B&W, Reset;
+  **Profile** (`profiles.list`, `develop.profile`) and its amount; then collapsible **Light**
+  (with **Curve**: point curve in RGB / R / G / B, and the parametric curve; **HDR**), **Color**
+  (white-balance presets and the **selector**: tap a neutral point; Temp / Tint / Vibrance /
+  Saturation on the desktop's gradient tracks; **Color Mixer** and **Color Grading** flyouts),
+  **Effects** (with Vignette and Grain), **Detail**, **Optics**, **Geometry** (Upright) and
+  **Calibration**. Every slider comes from the engine's control list (`develop.controls`), with its
+  track. Dials are used where three values of one colour read best (Color Mixer); Color Grading has
+  the desktop's **colour wheels**.
+- **Crop**: aspect ratios, **Auto** straighten (`crop.autoStraighten`), rotate, flip, angle.
+- **Masking**, as the desktop's panel: Create New Mask tiles (Subject, Sky, Background, Brush,
+  Linear, Radial, Luminance; **Object** and **Describe** with SAM 3; Dodge and Burn), Pop Subject
+  and Blue Sky, the masks list, each selection with **Add / Subtract / Invert / delete**
+  (`mask.addComponent`, `mask.component`), brush settings, and the desktop's 17 local sliders.
+  Subject and Background come from ML Kit on the phone; brush strokes and Object taps map to the
+  photo through `Mobile::view_to_image`. SAM 3 is an optional ~3.4 GB download (Meta's SAM
+  License) offered on phones with 6 GB of memory or more.
+- **Remove**: background removal (ML Kit matte), Magic Eraser (tolerance, feather, opacity,
+  contiguous, anti-alias, sample), undo, restore, transparent PNG.
+- **Presets**: groups as sections, live thumbnails (`Mobile::preset_thumbnail`).
+- **Export**: JPEG, PNG, WebP or AVIF, size and quality, then Save to Gallery (Pictures/LightCraft)
+  or Share. **Info**: file, size, capture time, camera, lens, exposure, place; stars and flags.
 
 **Brand mark**: the launcher icon (adaptive: the lynx on the amber field, an ink-only themed
 icon), the splash icon and the library header are the LightCraft app icon
@@ -95,8 +86,8 @@ Gradle runs `cargo ndk` before every build (the `cargoNdk` task), so Rust change
 The release APK is minified and signed with the debug key so it installs directly; a store build
 supplies its own signing config. `smoke-test.sh` installs an APK on a connected device or emulator,
 opens the editor and saves screenshots; CI (`.github/workflows/android.yml`) runs it on an emulator.
-`./gradlew :app:recordPaparazziRelease -x cargoNdk` renders the editor chrome (dials, histogram,
-tool rows) on the JVM, no device or NDK needed, into `app/src/test/snapshots/` (gitignored) for a
+`./gradlew :app:recordPaparazziRelease -x cargoNdk` renders the library, sidebar, Edit panel,
+Masking and Color Grading on the JVM (with the system font: layoutlib here can't load Inter), no device or NDK needed, into `app/src/test/snapshots/` (gitignored) for a
 quick look at layout changes; `./gradlew :app:testReleaseUnitTest -x cargoNdk` runs the JVM tests.
 
 Licences: the Compose, AndroidX (incl. core-splashscreen) and Material icon libraries are
