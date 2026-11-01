@@ -38,6 +38,9 @@ env:
 
 jobs:
   apk:
+    # the signing key's secrets (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+    # ANDROID_KEY_ALIAS) are environment secrets of `prod`
+    environment: prod
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
