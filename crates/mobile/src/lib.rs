@@ -11,17 +11,24 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use lightcraft_engine::catalog::{PhotoId, Source};
 use lightcraft_engine::export::{ExportOptions, export_photo};
-use lightcraft_engine::{EngineError, RenderJob, Session};
+use lightcraft_engine::{EngineError, RenderJob, Session, SourceLevel};
+use lightcraft_geom::Point;
 use serde_json::{Value, json};
 
 pub use lightcraft_bgremove::EraseOptions;
+pub use paint::{Painter, SIDE as PAINT_SIDE};
+
+mod paint;
 
 /// The largest edge a render may ask for (a phone screen is ≤ 4K; exports go through `export.*`).
 pub const MAX_EDGE: usize = 8192;
+
+/// Long edge of the geometry plan [`Mobile::view_to_image`] maps through (only its shape matters).
+const VIEW_PROBE: usize = 1024;
 
 /// A rendered image: `width × height` straight-alpha sRGB pixels, 4 bytes each (RGBA).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +160,66 @@ impl Mobile {
         run(if draft { job.draft() } else { job })
     }
 
+    /// [`Mobile::render`] of the *whole* photo, crop ignored: what the crop tool shows, so a crop
+    /// handle has image to be dragged back out into. The crop frame is drawn over it by the UI.
+    pub fn render_uncropped(&self, photo: u64, max_w: u32, max_h: u32, draft: bool) -> Result<Frame, String> {
+        let (w, h) = (clamp_edge(max_w)?, clamp_edge(max_h)?);
+        let job = self.lock().loupe_job(PhotoId(photo), w, h, false).ok_or_else(|| format!("no photo {photo}"))?;
+        run(if draft { job.draft() } else { job })
+    }
+
+    /// One window of the photo at the scale a `full_w × full_h` frame would have: what a zoomed
+    /// view needs, so the sliders that work on pixels (sharpening, noise, grain, chromatic
+    /// aberration) show what they really do instead of a magnified preview.
+    ///
+    /// Every number here comes from the UI's zoom and pan, so the window is clamped into the frame
+    /// and can only ask for pixels that exist. `Ok(None)`: this window reads more than one render
+    /// can hold — the caller shows the whole frame instead of an error.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_region(
+        &self,
+        photo: u64,
+        full_w: u32,
+        full_h: u32,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        apply_crop: bool,
+        draft: bool,
+    ) -> Result<Option<Frame>, String> {
+        let (fw, fh) = (clamp_edge(full_w)?, clamp_edge(full_h)?);
+        let want = lightcraft_engine::pipeline::PixelWindow {
+            x: usize::try_from(x).unwrap_or(usize::MAX),
+            y: usize::try_from(y).unwrap_or(usize::MAX),
+            w: clamp_edge(w)?,
+            h: clamp_edge(h)?,
+        }
+        .clamped(fw, fh);
+        let job = {
+            let mut s = self.lock();
+            match s.region_job(PhotoId(photo), fw, fh, want, apply_crop) {
+                Some(job) => job,
+                // `region_job` says no when the window reads (spots, Auto Mask strokes) more than
+                // one render can hold; that is a reason to show the whole frame, not an error.
+                None if s.catalog.photo(PhotoId(photo)).is_some() => return Ok(None),
+                None => return Err(format!("no photo {photo}")),
+            }
+        };
+        run(if draft { job.draft() } else { job }).map(Some)
+    }
+
+    /// [`Mobile::render`] with mask `mask` tinted red over the photo where it applies (what the
+    /// mask selects), as the desktop's mask overlay shows it.
+    pub fn render_mask(&self, photo: u64, max_w: u32, max_h: u32, mask: u32, draft: bool) -> Result<Frame, String> {
+        let (w, h) = (clamp_edge(max_w)?, clamp_edge(max_h)?);
+        let id = u16::try_from(mask).map_err(|_| format!("no mask {mask}"))?;
+        let job = self.lock().loupe_job(PhotoId(photo), w, h, true).ok_or_else(|| format!("no photo {photo}"))?;
+        let overlay = lightcraft_engine::pipeline::Overlay::Mask { id, view: lightcraft_engine::pipeline::MaskView::Color, color: [255, 59, 48], opacity: 55 };
+        let job = job.with_overlay(overlay);
+        run(if draft { job.draft() } else { job })
+    }
+
     /// A grid thumbnail of `photo` whose long edge is at least `long_edge`.
     pub fn thumbnail(&self, photo: u64, long_edge: u32) -> Result<Frame, String> {
         let edge = clamp_edge(long_edge)?;
@@ -180,6 +247,39 @@ impl Mobile {
 }
 
 impl Mobile {
+    /// Paint Generative spots with `painter` from now on (`None`: content-aware fill again);
+    /// renders made the other way are dropped so they are made again.
+    pub fn set_painter(&self, painter: Option<Box<dyn paint::Painter>>) {
+        let fill = painter.map(|p| Arc::new(paint::PainterFill::new(p)) as Arc<dyn lightcraft_engine::pipeline::spots::GenerativeFill>);
+        lightcraft_engine::pipeline::spots::set_generative_fill(fill);
+        self.lock().media.rendered.clear();
+    }
+
+    /// Where the point `(x, y)` of a render of `photo`, normalized to that render (the cropped,
+    /// straightened, rotated frame the phone shows), lies in the photo: the normalized image
+    /// coordinates that masks, spots and the colour pickers take.
+    pub fn view_to_image(&self, photo: u64, x: f64, y: f64) -> Result<(f64, f64), String> {
+        if !(x.is_finite() && y.is_finite()) {
+            return Err(format!("the point ({x}, {y}) is not finite"));
+        }
+        let mut s = self.lock();
+        let id = PhotoId(photo);
+        if s.catalog.photo(id).is_none() {
+            return Err(format!("no photo {photo}"));
+        }
+        let src = s.source_now(id, SourceLevel::Thumb)?;
+        let info = s.source_info(id);
+        let d = s.develop_of(id).unwrap_or_default();
+        let req = lightcraft_engine::pipeline::RenderRequest::fit(VIEW_PROBE, VIEW_PROBE);
+        let plan = lightcraft_engine::pipeline::plan(&src, &info, &d, &req);
+        let (w, h) = (plan.w as f64, plan.h as f64);
+        let p = plan.frame.out_to_norm(plan.w, plan.h).apply(Point::new(x.clamp(0.0, 1.0) * w, y.clamp(0.0, 1.0) * h));
+        if !(p.x.is_finite() && p.y.is_finite()) {
+            return Err("the photo's geometry has no inverse there".into());
+        }
+        Ok((p.x, p.y))
+    }
+
     /// A mask on the active photo from a segmenter's output (the phone's on-device subject
     /// segmentation): `probs` are `side × side` foreground probabilities over the uncropped photo.
     /// `invert` keeps the rest instead (Background). Returns the engine's answer, as [`Mobile::execute`].
@@ -373,6 +473,264 @@ mod tests {
         assert_eq!(mean(&unedited), mean(&before));
     }
 
+    /// Make `id` the active photo, so the `crop.*` / `mask.*` commands have something to act on.
+    fn activate(m: &Mobile, id: u64) {
+        let r = parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+    }
+
+    #[test]
+    fn the_crop_tool_can_render_the_whole_photo() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        activate(&m, id);
+        // a tall crop out of the middle: the cropped render is that shape, the uncropped one is not
+        let r = parse(&m.execute("crop.set", &json!({"rect": [0.4, 0.0, 0.6, 1.0]}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let cropped = m.render(id, 400, 400, false, false).unwrap();
+        let whole = m.render_uncropped(id, 400, 400, false).unwrap();
+        let aspect = |f: &Frame| f.width as f64 / f.height as f64;
+        assert!(aspect(&cropped) < aspect(&whole), "the crop is taller than the photo: {:?} vs {:?}", cropped.width, whole.width);
+        // and it is the photo's own shape, so a handle has image outside the crop to reach into
+        let plain = m.render(id, 400, 400, true, false).unwrap();
+        assert!((aspect(&whole) - aspect(&plain)).abs() < 0.02, "uncropped matches the photo: {} vs {}", aspect(&whole), aspect(&plain));
+    }
+
+    #[test]
+    fn a_region_render_is_the_window_at_full_scale() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        // the middle quarter of a 2x frame: 200x200 of pixels that a 200x200 whole-frame render
+        // would have had to squeeze the whole photo into
+        let window = m.render_region(id, 400, 400, 100, 100, 200, 200, true, false).unwrap();
+        let window = window.expect("the demo photo has no spots, so one render holds the window");
+        assert_eq!((window.width, window.height), (200, 200));
+        assert_eq!(window.rgba.len(), 200 * 200 * 4);
+        // it is not the same pixels as the whole frame scaled down: it is a zoomed-in crop of it
+        let whole = m.render_region(id, 400, 400, 0, 0, 400, 400, true, false).unwrap().unwrap();
+        assert_ne!(window.rgba, whole.rgba[..window.rgba.len()], "the window is a different part of the photo");
+    }
+
+    #[test]
+    fn a_region_window_is_clamped_not_trusted() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        // a stale viewport asking far outside the frame still renders pixels that exist
+        let f = m.render_region(id, 200, 200, 10_000, 10_000, 500, 500, true, false).unwrap().unwrap();
+        assert!(f.width >= 1 && f.height >= 1 && f.rgba.len() == (f.width * f.height * 4) as usize);
+        // and the sizes go through the same gate as every other render
+        assert!(m.render_region(id, 0, 200, 0, 0, 10, 10, true, false).is_err());
+        assert!(m.render_region(u64::MAX, 200, 200, 0, 0, 10, 10, true, false).is_err());
+        assert!(m.render_uncropped(u64::MAX, 100, 100, false).is_err());
+        assert!(m.render_uncropped(id, 0, 100, false).is_err());
+    }
+
+    /// How red the mask overlay has made the pixel at (`fx`, `fy`) of `f` (0..1 of the frame): the
+    /// tint is `[255, 59, 48]`, so where the mask selects, red runs well ahead of blue.
+    fn tint(f: &Frame, fx: f64, fy: f64) -> i32 {
+        let x = ((fx * f64::from(f.width)) as u32).min(f.width.saturating_sub(1));
+        let y = ((fy * f64::from(f.height)) as u32).min(f.height.saturating_sub(1));
+        let i = ((y * f.width + x) * 4) as usize;
+        match (f.rgba.get(i), f.rgba.get(i + 2)) {
+            (Some(r), Some(b)) => i32::from(*r) - i32::from(*b),
+            _ => 0,
+        }
+    }
+
+    /// An AI-style mask over the whole frame, as `Segmenter` + `add_seg_mask` make one on the phone.
+    fn seg_mask_everywhere(m: &Mobile) -> u32 {
+        let answer = parse(&m.add_seg_mask("Subject", 32, &[0.99_f32; 32 * 32], false));
+        assert_eq!(answer["ok"], true, "{answer}");
+        answer["result"]["activeMask"].as_u64().unwrap_or_default() as u32
+    }
+
+    #[test]
+    fn a_subtract_brush_takes_away_from_an_ai_mask() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        activate(&m, id);
+        let mid = seg_mask_everywhere(&m);
+        let before = m.render_mask(id, 200, 200, mid, false).unwrap();
+        assert!(tint(&before, 0.5, 0.5) > 20, "the AI mask selects the middle: {}", tint(&before, 0.5, 0.5));
+
+        // What the phone's Erase chip now does: a Subtract component, painted *positively*.
+        let r = parse(&m.execute("mask.addComponent", &json!({"id": mid, "kind": "brush", "op": "subtract"}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let stroke = json!({"id": mid, "points": [[0.5, 0.5]], "size": 0.25, "feather": 0.0});
+        let r = parse(&m.execute("mask.brushStroke", &stroke.to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+
+        let after = m.render_mask(id, 200, 200, mid, false).unwrap();
+        assert!(tint(&after, 0.5, 0.5) < tint(&before, 0.5, 0.5) - 20, "the middle is out of the mask: {}", tint(&after, 0.5, 0.5));
+        assert!(tint(&after, 0.04, 0.04) > 20, "an unpainted corner stays selected: {}", tint(&after, 0.04, 0.04));
+    }
+
+    #[test]
+    fn an_erase_stroke_alone_cannot_touch_an_ai_mask() {
+        // Why the Erase chip has to add a Subtract component: the brush's own `erase` only rubs
+        // out paint inside a brush component, and an AI mask has no paint. This pins the engine
+        // behaviour the phone works around, so a change here is noticed.
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        activate(&m, id);
+        let mid = seg_mask_everywhere(&m);
+        let before = m.render_mask(id, 200, 200, mid, false).unwrap();
+        let stroke = json!({"id": mid, "points": [[0.5, 0.5]], "size": 0.25, "feather": 0.0, "erase": true});
+        assert_eq!(parse(&m.execute("mask.brushStroke", &stroke.to_string()))["ok"], true);
+        let after = m.render_mask(id, 200, 200, mid, false).unwrap();
+        assert_eq!(tint(&after, 0.5, 0.5), tint(&before, 0.5, 0.5), "an erase stroke on its own changes nothing");
+    }
+
+    #[test]
+    fn dragging_a_crop_handle_moves_that_edge_only() {
+        // The contract the phone's crop handles rely on: a handle number, the point the finger went
+        // down at and the point it is at now, both in the straightened frame, plus the crop the
+        // drag began from. `crop.drag` keeps the opposite edges and stops at the image edge.
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        activate(&m, id);
+        let crop_now = || {
+            let d = parse(&m.execute("develop.get", "{}"));
+            let r = &d["result"]["crop"]["geometry"]["rect"];
+            [r["x0"].as_f64(), r["y0"].as_f64(), r["x1"].as_f64(), r["y1"].as_f64()].map(|v| v.unwrap_or(-1.0))
+        };
+        assert_eq!(crop_now(), [0.0, 0.0, 1.0, 1.0], "the whole photo to begin with");
+
+        // handle 2 is the bottom-right corner, dragged in towards the middle
+        let drag = json!({"handle": 2, "from": [1.0, 1.0], "to": [0.7, 0.6], "start": [0.0, 0.0, 1.0, 1.0]});
+        assert_eq!(parse(&m.execute("crop.drag", &drag.to_string()))["ok"], true);
+        let [x0, y0, x1, y1] = crop_now();
+        assert!((x0 - 0.0).abs() < 1e-6 && (y0 - 0.0).abs() < 1e-6, "the opposite corner stays put: {x0}, {y0}");
+        assert!(x1 < 0.75 && y1 < 0.65, "the dragged corner followed the finger: {x1}, {y1}");
+
+        // handle 8 moves the whole frame; its size is kept
+        let (w, h) = (x1 - x0, y1 - y0);
+        let drag = json!({"handle": 8, "from": [0.35, 0.3], "to": [0.45, 0.35], "start": [x0, y0, x1, y1]});
+        assert_eq!(parse(&m.execute("crop.drag", &drag.to_string()))["ok"], true);
+        let [mx0, my0, mx1, my1] = crop_now();
+        assert!(mx0 > x0 && my0 > y0, "the frame moved: {mx0}, {my0}");
+        assert!(((mx1 - mx0) - w).abs() < 1e-3 && ((my1 - my0) - h).abs() < 1e-3, "and kept its size");
+
+        // a drag far outside stops at the image edge instead of leaving it
+        let drag = json!({"handle": 2, "from": [0.5, 0.5], "to": [9.0, 9.0], "start": [0.1, 0.1, 0.5, 0.5]});
+        assert_eq!(parse(&m.execute("crop.drag", &drag.to_string()))["ok"], true);
+        let [_, _, ex1, ey1] = crop_now();
+        assert!(ex1 <= 1.0 + 1e-6 && ey1 <= 1.0 + 1e-6, "the crop stays inside the photo: {ex1}, {ey1}");
+
+        // and hostile input is an error, not a panic
+        assert_eq!(parse(&m.execute("crop.drag", &json!({"handle": 99, "from": [0, 0], "to": [1, 1]}).to_string()))["ok"], false);
+        assert_eq!(parse(&m.execute("crop.drag", &json!({"handle": 0, "from": ["x"], "to": [1, 1]}).to_string()))["ok"], false);
+    }
+
+    #[test]
+    fn a_colour_range_mask_samples_the_colour_it_is_given() {
+        // The exact sequence the phone's colour picker runs: select the photo (which clears the
+        // engine's mask selection), then sample — which is why it names the mask by id.
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        activate(&m, id);
+        let added = parse(&m.execute("mask.add", &json!({"kind": "colorRange", "name": "Color Range"}).to_string()));
+        assert_eq!(added["ok"], true, "{added}");
+        let mid = added["result"]["activeMask"].as_u64().unwrap_or_default();
+        activate(&m, id);
+        let at = json!({"id": mid, "x": 0.5, "y": 0.5, "add": true});
+        let r = parse(&m.execute("mask.sampleColor", &at.to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["samples"].as_array().map(Vec::len), Some(1), "one colour sampled: {r}");
+        // without the id it has nothing to work on, because `library.select` cleared the selection
+        let blind = parse(&m.execute("mask.sampleColor", &json!({"x": 0.5, "y": 0.5}).to_string()));
+        assert_eq!(blind["ok"], false, "{blind}");
+    }
+
+    /// Controls that cannot move a pixel on their own, each for a reason the phone UI now shows
+    /// instead of offering a live-looking slider. Anything *not* listed here must change the render.
+    const INERT: &[(&str, &str)] = &[
+        // a hue with no saturation is no colour at all: the grading wheel sets both together
+        ("grading.shadows.hue", "needs its saturation"),
+        ("grading.midtones.hue", "needs its saturation"),
+        ("grading.highlights.hue", "needs its saturation"),
+        ("grading.global.hue", "needs its saturation"),
+        ("grading.blending", "only shifts where the ranges meet"),
+        ("grading.balance", "only shifts where the ranges meet"),
+        // the eight B&W mix sliders need the B&W treatment
+        ("bw.red", "needs B&W"),
+        ("bw.orange", "needs B&W"),
+        ("bw.yellow", "needs B&W"),
+        ("bw.green", "needs B&W"),
+        ("bw.aqua", "needs B&W"),
+        ("bw.blue", "needs B&W"),
+        ("bw.purple", "needs B&W"),
+        ("bw.magenta", "needs B&W"),
+        // every hdr.* slider needs HDR editing switched on
+        ("hdr.maxEv", "needs HDR"),
+        ("hdr.sdrBrightness", "needs HDR"),
+        ("hdr.sdrContrast", "needs HDR"),
+        ("hdr.sdrHighlights", "needs HDR"),
+        ("hdr.sdrShadows", "needs HDR"),
+        ("hdr.sdrWhites", "needs HDR"),
+        ("hdr.sdrClarity", "needs HDR"),
+        // these need data a procedural photo (or a phone JPEG) has not got
+        ("optics.profileDistortion", "needs an embedded lens profile"),
+        ("optics.profileVignetting", "needs an embedded lens profile"),
+        ("enhance.denoise", "needs an AI-denoised raw"),
+        // dependants: no effect until their own master is non-zero
+        ("vignette.midpoint", "needs a vignette amount"),
+        ("vignette.roundness", "needs a vignette amount"),
+        ("vignette.feather", "needs a vignette amount"),
+        ("vignette.highlights", "needs a vignette amount"),
+        ("grain.size", "needs a grain amount"),
+        ("grain.roughness", "needs a grain amount"),
+        ("detail.nrDetail", "needs luminance noise reduction"),
+        ("detail.nrContrast", "needs luminance noise reduction"),
+        ("detail.nrColorDetail", "needs colour noise reduction"),
+        ("detail.nrColorSmoothness", "needs colour noise reduction"),
+        ("detail.sharpenRadius", "needs a sharpening amount"),
+        ("detail.sharpenDetail", "needs a sharpening amount"),
+        ("detail.sharpenMasking", "needs a sharpening amount"),
+        ("optics.defringePurpleHueLo", "needs a defringe amount"),
+        ("optics.defringePurpleHueHi", "needs a defringe amount"),
+        ("optics.defringeGreenHueLo", "needs a defringe amount"),
+        ("optics.defringeGreenHueHi", "needs a defringe amount"),
+        ("curve.refineSaturation", "needs a curve"),
+        ("crop.angle", "straightens; tested by the crop tests"),
+    ];
+
+    /// Every slider the phone shows, set away from its default, must change the picture — or be
+    /// listed in [`INERT`] with the reason it cannot. This is the standing answer to "the features
+    /// do nothing": a control that quietly does nothing either gets a gate in the UI or shows up
+    /// here.
+    #[test]
+    fn every_control_the_phone_shows_can_change_the_picture() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        activate(&m, id);
+        let listed = parse(&m.execute("develop.controls", "{}"));
+        let controls = listed["result"].as_array().cloned().unwrap_or_default();
+        assert!(controls.len() > 80, "the engine lists its controls: {}", controls.len());
+
+        // 1:1 so the pixel-scale sliders (sharpening, noise, grain, CA) can show at all
+        let shot = || m.render_region(id, 900, 900, 300, 300, 220, 220, true, false).unwrap().unwrap().rgba;
+        let base = shot();
+        let mut dead = Vec::new();
+        for c in &controls {
+            let Some(cid) = c["id"].as_str() else { continue };
+            let (min, max) = (c["min"].as_f64().unwrap_or(0.0), c["max"].as_f64().unwrap_or(0.0));
+            let default = c["default"].as_f64().unwrap_or(0.0);
+            // the end furthest from the default, so there is the most to see
+            let value = if (max - default).abs() >= (default - min).abs() { max } else { min };
+            let set = parse(&m.execute("develop.set", &json!({"control": cid, "value": value}).to_string()));
+            assert_eq!(set["ok"], true, "setting {cid} to {value}: {set}");
+            let changed = shot() != base;
+            assert_eq!(parse(&m.execute("develop.set", &json!({"control": cid, "value": default}).to_string()))["ok"], true);
+            match (changed, INERT.iter().find(|(k, _)| *k == cid)) {
+                (true, None) | (false, Some(_)) => {}
+                (false, None) => dead.push(format!("{cid} = {value} changed nothing")),
+                (true, Some((_, why))) => dead.push(format!("{cid} works after all; drop it from INERT ({why})")),
+            }
+        }
+        assert!(dead.is_empty(), "{} control(s) disagree with INERT:\n  {}", dead.len(), dead.join("\n  "));
+    }
+
     #[test]
     fn bad_input_is_an_error_answer_not_a_panic() {
         let m = Mobile::demo();
@@ -381,6 +739,70 @@ mod tests {
         assert!(m.render(u64::MAX, 100, 100, false, false).is_err());
         assert!(m.render(m.photos()[0], 0, 100, false, false).is_err());
         assert!(m.thumbnail(m.photos()[0], 0).is_err());
+    }
+
+    #[test]
+    fn view_points_map_through_the_crop() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        // no crop: the view is the photo
+        let (x, y) = m.view_to_image(id, 0.25, 0.5).unwrap();
+        assert!((x - 0.25).abs() < 1e-3 && (y - 0.5).abs() < 1e-3, "({x}, {y})");
+        // the right half: the view's left edge is the photo's middle
+        let r = parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let r = parse(&m.execute("crop.set", &json!({"rect": [0.5, 0.0, 1.0, 1.0]}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let (x, y) = m.view_to_image(id, 0.0, 0.5).unwrap();
+        assert!((x - 0.5).abs() < 1e-3 && (y - 0.5).abs() < 1e-3, "the view's left edge is the photo's middle: ({x}, {y})");
+        let (x, _) = m.view_to_image(id, 1.0, 0.5).unwrap();
+        assert!((x - 1.0).abs() < 1e-3, "{x}");
+        assert!(m.view_to_image(id, f64::NAN, 0.5).is_err());
+        assert!(m.view_to_image(u64::MAX, 0.5, 0.5).is_err());
+    }
+
+    /// The phone's own sequence: it re-selects the open photo before every edit, maps a stroke
+    /// through `view_to_image`, then heals, clones, paints a brush mask and deletes it.
+    #[test]
+    fn the_phones_remove_and_mask_flow_edits_the_photo() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        let select = || parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        let get = || parse(&m.execute("develop.get", "{}"));
+        let pts: Vec<[f64; 2]> = (0..12)
+            .map(|i| {
+                let (x, y) = m.view_to_image(id, 0.3 + f64::from(i) * 0.01, 0.4).unwrap();
+                [x, y]
+            })
+            .collect();
+        let before = m.render(id, 160, 120, false, false).unwrap();
+        for mode in ["heal", "clone", "fill", "generative"] {
+            assert_eq!(select()["ok"], true);
+            let r = parse(&m.execute("spot.add", &json!({"mode": mode, "points": pts, "size": 0.05, "feather": 50.0, "opacity": 100.0}).to_string()));
+            assert_eq!(r["ok"], true, "{mode}: {r}");
+        }
+        assert_eq!(get()["result"]["spots"].as_array().map(Vec::len), Some(4), "{}", get());
+
+        let after = m.render(id, 160, 120, false, false).unwrap();
+        assert_ne!(before.rgba, after.rgba, "three spots should change the render");
+
+        assert_eq!(select()["ok"], true);
+        let r = parse(&m.execute("mask.add", &json!({"kind": "brush", "name": "Brush"}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let masks = get()["result"]["masks"].clone();
+        let mask = masks[0]["id"].as_u64().unwrap();
+        assert_eq!(select()["ok"], true);
+        let r = parse(&m.execute("mask.brushStroke", &json!({"id": mask, "points": pts, "size": 0.05, "feather": 50.0, "erase": false}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        // the overlay tints the painted area red: the render differs from the plain one
+        let plain = m.render(id, 160, 120, false, false).unwrap();
+        let tinted = m.render_mask(id, 160, 120, u32::try_from(mask).unwrap(), false).unwrap();
+        assert_ne!(plain.rgba, tinted.rgba, "the mask overlay should show");
+        assert!(m.render_mask(id, 160, 120, 70_000, false).is_err());
+        assert_eq!(select()["ok"], true);
+        let r = parse(&m.execute("mask.delete", &json!({"id": mask}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(get()["result"]["masks"].as_array().map(Vec::len), Some(0), "{}", get());
     }
 
     #[test]

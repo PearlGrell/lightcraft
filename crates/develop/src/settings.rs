@@ -1047,6 +1047,9 @@ pub enum SpotMode {
     Clone,
     /// Content-aware: the spot is rebuilt from patches of its surroundings (no single source).
     Fill,
+    /// Generative: the spot is painted in by an inpainting model the front end provides (the
+    /// phone's optional LaMa download); otherwise rendered as [`SpotMode::Fill`]. No single source.
+    Generative,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

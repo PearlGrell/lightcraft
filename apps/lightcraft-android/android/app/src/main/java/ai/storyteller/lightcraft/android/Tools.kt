@@ -45,10 +45,11 @@ data class Group(val title: String, val prefixes: List<String>, val exclude: Lis
     fun matches(id: String) = prefixes.any { id.startsWith(it) } && exclude.none { id.startsWith(it) }
 }
 
-/** The six tabs of the editor's bottom bar. */
-enum class MainTab(val label: String) { Quick("Quick actions"), Presets("Presets"), Crop("Crop"), Edit("Edit"), Masking("Masking"), Remove("Remove") }
+/** The six tabs of the editor's bottom bar (icon over label). */
+enum class MainTab(val label: String) { Quick("Actions"), Presets("Presets"), Crop("Crop"), Edit("Edit"), Masking("Masking"), Remove("Remove") }
 
-enum class ToolKind { Sliders, Action, Curve }
+/** Brush tools paint on the photo (heal, clone, remove). */
+enum class ToolKind { Sliders, Action, Curve, Brush, Profiles }
 
 /** A labelled tool of the row above the bottom bar. */
 data class Tool(val id: String, val label: String, val kind: ToolKind = ToolKind.Sliders, val groups: List<Group> = emptyList())
@@ -59,10 +60,41 @@ data class Aspect(val label: String, val ratio: Float)
 /** A mask's local adjustment slider (`mask.adjust` value names). */
 data class LocalSlider(val key: String, val label: String, val min: Float, val max: Float, val decimals: Int = 0)
 
+/**
+ * Why a slider cannot do anything yet. The panels are generated from the engine's control list, so
+ * they happily list sliders whose effect is switched off or that need data a phone photo has not
+ * got; without this they look live and do nothing, which is most of what "the features do nothing"
+ * meant. [switchable] groups show a switch; the rest are hidden.
+ */
+data class Gate(val reason: String, val switchable: Boolean)
+
+object GateRules {
+    /**
+     * The gate on a control, given the switches from `develop.get`, or `null` when it is live.
+     *
+     * - B&W mix: `is_bw` must hold, else the eight sliders are dropped from the pipeline.
+     * - HDR: every `hdr.*` slider needs `hdr.enabled`; SDR renders use the SDR rendition.
+     * - Lens profile: needs an embedded profile, which a phone-gallery JPEG does not carry.
+     * - AI denoise: needs a denoised twin of the source, which only a raw with a cached denoise
+     *   product has, so it can never bite on a gallery photo.
+     */
+    fun of(id: String, bw: Boolean, hdr: Boolean, lensProfile: Boolean): Gate? = when {
+        id.startsWith("bw.") && !bw -> Gate("Turn on B&W to mix the colours", switchable = true)
+        id.startsWith("hdr.") && !hdr -> Gate("Turn on HDR to use these", switchable = true)
+        id.startsWith("optics.profile") && !lensProfile -> Gate("This photo has no lens profile", switchable = false)
+        id == "enhance.denoise" -> Gate("AI denoise needs a raw file", switchable = false)
+        else -> null
+    }
+
+    /** The sliders of [controls] worth showing at all: a hidden gate means it can never work here. */
+    fun visible(controls: List<Control>, bw: Boolean, hdr: Boolean, lensProfile: Boolean): List<Control> =
+        controls.filter { of(it.id, bw, hdr, lensProfile)?.switchable != false }
+}
+
 object Tools {
     val edit = listOf(
         Tool("auto", "Auto", ToolKind.Action),
-        Tool("light", "Light", groups = listOf(Group("Light", listOf("light.")))),
+        Tool("light", "Light", groups = listOf(Group("Light", listOf("light.")), Group("Tone curve", listOf("curve.")), Group("HDR", listOf("hdr.")))),
         Tool(
             "color", "Color",
             groups = listOf(
@@ -77,8 +109,11 @@ object Tools {
         Tool("effects", "Effects", groups = listOf(Group("Effects", listOf("effects.")), Group("Vignette", listOf("vignette.")), Group("Grain", listOf("grain.")))),
         Tool("detail", "Detail", groups = listOf(Group("Sharpening", listOf("detail.sharpen")), Group("Noise", listOf("enhance.denoise", "detail.nr")))),
         Tool("optics", "Optics", groups = listOf(Group("Lens", listOf("optics.distortion", "optics.vignetting", "optics.profile")), Group("Chromatic", listOf("optics.ca", "optics.defringe")))),
-        Tool("geometry", "Geometry", groups = listOf(Group("Upright", listOf("geometry.")))),
+        Tool("profiles", "Profiles", ToolKind.Profiles),
     )
+
+    /** The Crop tab's Geometry page (Upright and the manual transforms). */
+    val geometry = Group("Geometry", listOf("geometry."))
 
     val quick = listOf(
         Tool("auto", "Auto", ToolKind.Action),
@@ -91,17 +126,24 @@ object Tools {
 
     val masking = listOf(
         Tool("subject", "Subject", ToolKind.Action),
-        Tool("background", "Background", ToolKind.Action),
         Tool("sky", "Sky", ToolKind.Action),
+        Tool("background", "Background", ToolKind.Action),
+        Tool("brush", "Brush", ToolKind.Action),
         Tool("linear", "Linear", ToolKind.Action),
         Tool("radial", "Radial", ToolKind.Action),
+        Tool("colorRange", "Color Range", ToolKind.Action),
+        Tool("luminanceRange", "Luminance", ToolKind.Action),
     )
 
+    /** Remove: three brushes that work on the edit (undoable, any size), then the cutout tools. */
     val remove = listOf(
-        Tool("eraser", "Magic Eraser"),
+        Tool("fill", "Remove", ToolKind.Brush),
+        Tool("heal", "Heal", ToolKind.Brush),
+        Tool("clone", "Clone", ToolKind.Brush),
+        Tool("redeye", "Red Eye"),
+        Tool("eraser", "Eraser"),
         Tool("ai", "Remove BG", ToolKind.Action),
         Tool("keep", "Keep BG", ToolKind.Action),
-        Tool("undo", "Undo", ToolKind.Action),
         Tool("reset", "Restore", ToolKind.Action),
         Tool("export", "Save PNG", ToolKind.Action),
     )
@@ -123,5 +165,5 @@ object Tools {
         LocalSlider("noise", "Noise", -100f, 100f),
     )
 
-    val aspects = listOf(Aspect("Original", 0f), Aspect("1:1", 1f), Aspect("4:5", 4f / 5f), Aspect("3:2", 3f / 2f), Aspect("16:9", 16f / 9f))
+    val aspects = listOf(Aspect("Original", 0f), Aspect("1:1", 1f), Aspect("4:5", 4f / 5f), Aspect("9:16", 9f / 16f), Aspect("3:2", 3f / 2f), Aspect("16:9", 16f / 9f))
 }

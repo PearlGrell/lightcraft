@@ -115,4 +115,33 @@ object LcIcons {
             curveTo(9f, 19f, 11f, 9f, 20f, 4f)
         }
     }
+
+    /** Three lines getting shorter beside a down arrow: sort order. */
+    val SortDown: ImageVector = icon("SortDown") {
+        stroke(width = 2f) {
+            moveTo(3f, 6f); lineTo(15f, 6f)
+            moveTo(3f, 12f); lineTo(12f, 12f)
+            moveTo(3f, 18f); lineTo(9f, 18f)
+            moveTo(19f, 4f); lineTo(19f, 19.5f)
+            moveTo(16f, 16.5f); lineTo(19f, 19.5f); lineTo(22f, 16.5f)
+        }
+    }
+
+    /** Three thin, round-ended lines: the drawer menu. */
+    val Menu: ImageVector = icon("Menu") {
+        stroke(width = 1.6f) {
+            moveTo(3.5f, 6.5f); lineTo(20.5f, 6.5f)
+            moveTo(3.5f, 12f); lineTo(20.5f, 12f)
+            moveTo(3.5f, 17.5f); lineTo(20.5f, 17.5f)
+        }
+    }
+
+    /** Three small dots, stacked: more options. */
+    val More: ImageVector = icon("More") {
+        path(fill = SolidColor(Color.White)) {
+            circle(12f, 5.5f, 1.6f)
+            circle(12f, 12f, 1.6f)
+            circle(12f, 18.5f, 1.6f)
+        }
+    }
 }

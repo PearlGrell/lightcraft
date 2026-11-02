@@ -3420,6 +3420,7 @@ dependencies = [
  "lightcraft-bgremove",
  "lightcraft-codecs",
  "lightcraft-engine",
+ "lightcraft-geom",
  "lightcraft-raster",
  "log",
  "serde_json",
