@@ -1255,11 +1255,57 @@ pub struct Spot {
     pub opacity: f64,
     /// Source offset (normalized) from the target; None = auto (content-aware remove).
     pub source_offset: Option<Point>,
+    /// Generated content (a generative remove): the spot takes its pixels from this patch, its
+    /// tone matched to the surroundings as Heal does. `None` for every other spot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<SpotPatch>,
 }
 
 impl Default for Spot {
     fn default() -> Self {
-        Self { mode: SpotMode::Remove, points: Vec::new(), size: 0.02, feather: 50.0, opacity: 100.0, source_offset: None }
+        Self { mode: SpotMode::Remove, points: Vec::new(), size: 0.02, feather: 50.0, opacity: 100.0, source_offset: None, patch: None }
+    }
+}
+
+/// The pixels a generative remove made: area `rect` (`[x0, y0, x1, y1]`, normalized like the
+/// spot's points) as `width × height` 8-bit sRGB, deflated and base64. Rendering never runs the
+/// model: previews and exports at any size sample this patch.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpotPatch {
+    pub rect: [f64; 4],
+    pub width: u32,
+    pub height: u32,
+    pub data: String,
+}
+
+impl SpotPatch {
+    /// The largest side a patch may have.
+    pub const MAX_SIDE: u32 = 2048;
+
+    /// A patch of `rgb` (`width × height × 3` bytes) over `rect`; `None` for a size or area
+    /// that makes no sense.
+    pub fn encode(rect: [f64; 4], width: u32, height: u32, rgb: &[u8]) -> Option<SpotPatch> {
+        let valid = rect.iter().all(|v| v.is_finite()) && rect[0] < rect[2] && rect[1] < rect[3];
+        let n = (width as usize).checked_mul(height as usize)?.checked_mul(3)?;
+        if !valid || width == 0 || height == 0 || width > Self::MAX_SIDE || height > Self::MAX_SIDE || rgb.len() != n {
+            return None;
+        }
+        let z = miniz_oxide::deflate::compress_to_vec(rgb, 6);
+        Some(SpotPatch { rect, width, height, data: crate::segmask::base64_encode(&z) })
+    }
+
+    /// The pixels, or `None` when the data is damaged or claims an absurd size.
+    pub fn rgb(&self) -> Option<Vec<u8>> {
+        if self.width == 0 || self.height == 0 || self.width > Self::MAX_SIDE || self.height > Self::MAX_SIDE {
+            return None;
+        }
+        if !(self.rect.iter().all(|v| v.is_finite()) && self.rect[0] < self.rect[2] && self.rect[1] < self.rect[3]) {
+            return None;
+        }
+        let n = self.width as usize * self.height as usize * 3;
+        let z = crate::segmask::base64_decode(&self.data)?;
+        let v = miniz_oxide::inflate::decompress_to_vec_with_limit(&z, n).ok()?;
+        (v.len() == n).then_some(v)
     }
 }
 

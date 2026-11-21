@@ -1464,6 +1464,7 @@ fn spots_match() {
         feather,
         opacity: 100.0,
         source_offset: off.map(|o| Point::new(o.0, o.1)),
+        patch: None,
     };
     let sets: Vec<(&str, Vec<Spot>)> = vec![
         ("clone", vec![spot(SpotMode::Clone, &[(0.3, 0.4)], 0.04, 40.0, Some((0.15, 0.05)))]),

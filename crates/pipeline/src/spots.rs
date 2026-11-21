@@ -328,8 +328,9 @@ pub fn layout(spot: &Spot, frame: &Frame, w: usize, h: usize, ppl: f64) -> Optio
         })
         .collect();
     pts.first()?;
-    let fill = spot.mode == SpotMode::Fill;
-    let offset = if fill {
+    let patched = spot.patch.is_some();
+    let fill = spot.mode == SpotMode::Fill && !patched;
+    let offset = if fill || patched {
         Some((0.0, 0.0))
     } else {
         spot.source_offset.map(|o| {
@@ -364,7 +365,8 @@ pub fn layout(spot: &Spot, frame: &Frame, w: usize, h: usize, ppl: f64) -> Optio
         bh: by1 - by0,
         inner: r * (1.0 - feather * 0.8),
         opacity: (spot.opacity / 100.0).clamp(0.0, 1.0) as f32,
-        heal: matches!(spot.mode, SpotMode::Remove | SpotMode::Heal),
+        // a generated patch blends in like Heal: its tone follows the surroundings
+        heal: patched || matches!(spot.mode, SpotMode::Remove | SpotMode::Heal),
         fill,
     })
 }
@@ -383,10 +385,55 @@ fn fill_box(src: &mut [[f32; 3]], tgt: &[[f32; 3]], alpha: &[f32], bw: usize, bh
     }
 }
 
+/// A decoded generated patch, ready to sample in working-space linear light.
+struct Patch {
+    rect: [f64; 4],
+    w: usize,
+    h: usize,
+    px: Vec<[f32; 3]>,
+}
+
+impl Patch {
+    fn of(spot: &Spot) -> Option<Patch> {
+        let p = spot.patch.as_ref()?;
+        let rgb = p.rgb()?;
+        let m = lightcraft_color::SRGB.to_space(&lightcraft_color::WORKING);
+        let px = rgb
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|c| {
+                let lin = c.map(|v| f64::from(lightcraft_color::transfer::decode_srgb8(v)));
+                m.apply(lin).map(|v| v as f32)
+            })
+            .collect();
+        Some(Patch { rect: p.rect, w: p.width as usize, h: p.height as usize, px })
+    }
+
+    /// Bilinear sample at normalized image point `n`; `None` outside the patch.
+    fn sample(&self, n: Point) -> Option<[f32; 3]> {
+        let u = (n.x - self.rect[0]) / (self.rect[2] - self.rect[0]);
+        let v = (n.y - self.rect[1]) / (self.rect[3] - self.rect[1]);
+        if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+            return None;
+        }
+        let fx = (u * self.w as f64 - 0.5).clamp(0.0, (self.w - 1) as f64);
+        let fy = (v * self.h as f64 - 0.5).clamp(0.0, (self.h - 1) as f64);
+        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+        let (x1, y1) = ((x0 + 1).min(self.w - 1), (y0 + 1).min(self.h - 1));
+        let (dx, dy) = ((fx - x0 as f64) as f32, (fy - y0 as f64) as f32);
+        let at = |x: usize, y: usize| self.px.get(y * self.w + x).copied().unwrap_or([0.0; 3]);
+        let (a, b, c, d) = (at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1));
+        Some(std::array::from_fn(|k| (a[k] * (1.0 - dx) + b[k] * dx) * (1.0 - dy) + (c[k] * (1.0 - dx) + d[k] * dx) * dy))
+    }
+}
+
 /// Apply all spots to `img` (output resolution). `ppl` = output pixels per long-edge unit.
 pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
     let (w, h) = (img.width, img.height);
+    let to_norm = frame.out_to_norm(w, h);
     for spot in spots {
+        let patch = Patch::of(spot);
         let Some(SpotLayout { r, pts, offset, bx: bx0, by: by0, bw, bh, inner, opacity, heal, fill }) = layout(spot, frame, w, h, ppl) else {
             continue;
         };
@@ -401,8 +448,12 @@ pub fn apply(img: &mut Rgb32f, spots: &[Spot], frame: &Frame, ppl: f64) {
                 let (px, py) = ((bx0 + x) as f32 + 0.5, (by0 + y) as f32 + 0.5);
                 let d = pts.iter().map(|p| ((px - p.0).powi(2) + (py - p.1).powi(2)).sqrt()).fold(f32::MAX, f32::min);
                 alpha[y * bw + x] = (1.0 - smooth(inner, r, d)) * opacity;
-                src[y * bw + x] = img.sample_bilinear(px + offset.0, py + offset.1);
                 tgt[y * bw + x] = img.get(bx0 + x, by0 + y);
+                // a generated patch is the source where it covers; elsewhere the pixel itself
+                src[y * bw + x] = match &patch {
+                    Some(p) => p.sample(to_norm.apply(Point::new(f64::from(px), f64::from(py)))).unwrap_or(tgt[y * bw + x]),
+                    None => img.sample_bilinear(px + offset.0, py + offset.1),
+                };
             }
         }
         if fill {
@@ -474,6 +525,7 @@ mod tests {
                     feather: 0.0,
                     opacity: 0.0,
                     source_offset: Some(Point::new(8.0 / 64.0, 0.0)),
+                    patch: None,
                 };
                 apply(&mut img, &[spot], &frame, frame.px_per_long(64));
                 for (i, (actual, expected)) in img.data.iter().zip(&original.data).enumerate() {
@@ -496,6 +548,7 @@ mod tests {
                 feather: 0.0,
                 opacity: 100.0,
                 source_offset: Some(Point::new(0.125, 0.0)),
+                patch: None,
             };
             apply(&mut img, &[spot], &frame, frame.px_per_long(w));
             let (x, y) = (cx as usize, cy as usize);
@@ -545,6 +598,43 @@ mod tests {
             source_offset: Some(Point::new(0.3, 0.0)),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_generated_patch_replaces_the_spot_and_keeps_its_surroundings() {
+        // a flat mid-grey photo; the patch is the same grey with a dark dot in its middle
+        let (w, h) = (120, 80);
+        let grey = 0.2f32;
+        let mut img = Rgb32f::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                img.set(x, y, [grey; 3]);
+            }
+        }
+        let original = img.clone();
+        let g8 = (lightcraft_color::transfer::linear_to_srgb(grey) * 255.0).round() as u8;
+        let (pw, ph) = (40usize, 40usize);
+        let mut rgb = vec![g8; pw * ph * 3];
+        for y in 17..23 {
+            for x in 17..23 {
+                rgb[(y * pw + x) * 3..(y * pw + x) * 3 + 3].copy_from_slice(&[10, 10, 10]);
+            }
+        }
+        // the patch covers 40×40 output pixels centred on the spot
+        let rect = [(60.0 - 20.0) / w as f64, (40.0 - 20.0) / h as f64, (60.0 + 20.0) / w as f64, (40.0 + 20.0) / h as f64];
+        let patch = lightcraft_develop::SpotPatch::encode(rect, pw as u32, ph as u32, &rgb).unwrap();
+        let frame = Frame::new(w, h, &DevelopSettings::default(), true);
+        let spot = Spot { points: vec![Point::new(0.5, 0.5)], size: 10.0 / 120.0, feather: 20.0, patch: Some(patch), ..Default::default() };
+        apply(&mut img, &[spot], &frame, frame.px_per_long(w));
+        let lum = |p: [f32; 3]| p.iter().sum::<f32>() / 3.0;
+        assert!(lum(img.get(60, 40)) < 0.5 * grey, "the patch's dot shows: {:?}", img.get(60, 40));
+        assert_eq!(img.get(10, 10), original.get(10, 10), "outside the spot nothing changes");
+        // a damaged patch falls back to the pixels themselves: nothing breaks
+        let bad = lightcraft_develop::SpotPatch { rect, width: 40, height: 40, data: "not base64".into() };
+        let mut img2 = original.clone();
+        let spot = Spot { points: vec![Point::new(0.5, 0.5)], size: 10.0 / 120.0, patch: Some(bad), ..Default::default() };
+        apply(&mut img2, &[spot], &frame, frame.px_per_long(w));
+        assert!((lum(img2.get(60, 40)) - grey).abs() < 0.02);
     }
 
     #[test]
