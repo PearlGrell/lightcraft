@@ -25,12 +25,25 @@ exports go through the engine's one encoder (`lightcraft_engine::export`).
 - **Editor** (phone-editor layout): the photo edge to edge (pinch or double-tap to zoom, press and
   hold for the original, Compare for a draggable before/after split); back, undo, redo, compare and
   share float over it. At the bottom, the open tool's panel, a tool row, and a six-tab bar:
-  **Quick** (Auto, Pop, Sky, B&W, Remove BG, Reset), **Presets** (live thumbnail strip rendered with
+  **Quick edit** (the sliders most edits use: Exposure, Contrast, Highlights, Shadows, Whites,
+  Blacks, Temp, Tint, Vibrance, Saturation, Texture, Clarity, Dehaze, Vignette; and the one-tap
+  Auto, Subject pop, Blue sky, B&W and Reset), **Presets** (live thumbnail strip rendered with
   `Mobile::preset_thumbnail`, which never applies the preset), **Crop** (aspect ratios, rotate,
-  flip, straighten), **Edit** (Auto | Light, Color, Curve, Effects, Detail, Optics, Geometry),
-  **Masking** and **Remove**. Every slider comes from the engine's control list
-  (`develop.controls`), grouped by id prefix in `Tools.kt`. Sliders scrub relative to the finger,
-  snap to their default with a haptic tick, reset on double-tap; one drag is one undo step.
+  flip, straighten), **Edit** (Light, Color, Curve, Effects, Detail, Optics, Geometry, Lens Blur),
+  **Masking** and **Remove**. Each action appears in one tab only, and sliders that would share a
+  name get distinct ones (Calibration's "Red Primary Hue", Noise's "Color Detail"…, `Labels` in
+  `Tools.kt`). Every slider comes from the engine's control list (`develop.controls`), grouped by
+  id prefix in `Tools.kt`, in a scrolling list. Sliders draw the engine's track (Temp blue → yellow,
+  Tint green → magenta, Hue rainbow, Vibrance/Saturation grey → colour) with a ring thumb; they
+  scrub relative to the finger, snap to their default with a haptic tick, reset on double-tap; one
+  drag is one undo step.
+- **Color**: the mixer is a row of eight colour rings with Hue, Saturation and Luminance for the
+  open band; Grading has Shadows / Midtones / Highlights / Global, a hue × saturation wheel with a
+  draggable puck, Luminance, Blending and Balance.
+- **Optics**: Enable Profile Corrections and Remove Chromatic Aberration switches (`develop.merge`
+  of `optics.lens_profile` / `optics.remove_ca`), then the lens and fringe sliders.
+- **Lens Blur**: Apply, what stays in focus (the subject the engine estimates, or a Round, Wide or
+  Tall area), Blur Amount, Boost and Transition.
 - **Point tone curve** (`ui/CurveEditor.kt`): RGB, Red, Green and Blue; tap to add a point, drag to
   move it, drag an inner point off the grid to remove it (`develop.curve`).
 - **AI masks** (Masking tab): Subject and Background come from ML Kit Subject Segmentation

@@ -2,6 +2,37 @@ package ai.storyteller.lightcraft.android
 
 import org.json.JSONObject
 
+/**
+ * Labels the phone shows instead of the engine's where two sliders would otherwise read the same
+ * ("Red Hue" in both Mixer and Calibration, "Detail" twice under Noise, "Midpoint" in Vignette and
+ * Lens…), so no option appears twice under one name.
+ */
+object Labels {
+    private val names = mapOf(
+        "calibration.redHue" to "Red Primary Hue",
+        "calibration.redSat" to "Red Primary Saturation",
+        "calibration.greenHue" to "Green Primary Hue",
+        "calibration.greenSat" to "Green Primary Saturation",
+        "calibration.blueHue" to "Blue Primary Hue",
+        "calibration.blueSat" to "Blue Primary Saturation",
+        "enhance.denoise" to "AI Denoise",
+        "detail.nrLuminance" to "Luminance",
+        "detail.nrDetail" to "Luminance Detail",
+        "detail.nrContrast" to "Luminance Contrast",
+        "detail.nrColor" to "Color",
+        "detail.nrColorDetail" to "Color Detail",
+        "detail.nrColorSmoothness" to "Color Smoothness",
+        "detail.sharpenAmount" to "Amount",
+        "detail.sharpenDetail" to "Detail",
+        "vignette.amount" to "Vignette",
+        "vignette.highlights" to "Highlight Priority",
+        "optics.vignettingMidpoint" to "Vignetting Midpoint",
+        "lensBlur.amount" to "Blur Amount",
+    )
+
+    fun of(id: String, engine: String): String = names[id] ?: engine
+}
+
 /** One develop slider as the engine describes it (`develop.controls`), with the photo's value. */
 data class Control(
     val id: String,
@@ -20,7 +51,7 @@ data class Control(
             val id = o.getString("id")
             return Control(
                 id = id,
-                label = o.optString("label", id),
+                label = Labels.of(id, o.optString("label", id)),
                 section = o.optString("section", ""),
                 min = o.optDouble("min", -100.0).toFloat(),
                 max = o.optDouble("max", 100.0).toFloat(),
@@ -121,15 +152,46 @@ data class Group(
 }
 
 /** The six tabs of the editor's bottom bar. */
-enum class MainTab(val label: String) { Quick("Quick actions"), Presets("Presets"), Crop("Crop"), Edit("Edit"), Masking("Masking"), Remove("Remove") }
+enum class MainTab(val label: String) { Quick("Quick edit"), Presets("Presets"), Crop("Crop"), Edit("Edit"), Masking("Masking"), Remove("Remove") }
 
-enum class ToolKind { Sliders, Action, Curve }
+enum class ToolKind { Sliders, Action, Curve, LensBlur }
 
 /** How a group's controls are laid out: a list of sliders, the colour mixer, or the grading wheels. */
 enum class GroupStyle { Sliders, Mixer, Grading }
 
 /** A labelled tool of the row above the bottom bar. */
 data class Tool(val id: String, val label: String, val kind: ToolKind = ToolKind.Sliders, val groups: List<Group> = emptyList())
+
+/**
+ * Temp and Tint on the relative scale of rendered files (JPEG, HEIC, PNG…), as the desktop shows
+ * them: −100…+100, a shift in mireds around 6500 K for Temp. The engine stores Kelvin either way.
+ */
+object RelativeWb {
+    private const val NEUTRAL_MIRED = 1e6 / 6500.0
+
+    fun kelvinToRel(k: Float): Float =
+        if (k <= 0f || !k.isFinite()) 0f else ((NEUTRAL_MIRED - 1e6 / k) / 0.8).toFloat().coerceIn(-100f, 100f)
+
+    fun relToKelvin(r: Float): Float = (1e6 / (NEUTRAL_MIRED - r.coerceIn(-100f, 100f) * 0.8)).toFloat()
+
+    /** The engine's Temp / Tint controls as the relative sliders show them; As Shot reads as 0. */
+    fun show(c: Control, asShot: Boolean): Control = when (c.id) {
+        "wb.temp" -> c.copy(min = -100f, max = 100f, default = 0f, decimals = 0, unit = "", value = if (asShot) 0f else kelvinToRel(c.value))
+        "wb.tint" -> c.copy(min = -100f, max = 100f, default = 0f, value = if (asShot) 0f else c.value.coerceIn(-100f, 100f))
+        else -> c
+    }
+
+    /** A relative slider value as the engine's control value. */
+    fun toEngine(id: String, v: Float): Float = if (id == "wb.temp") relToKelvin(v) else v
+}
+
+/** The develop switches that aren't sliders: Optics' two checkboxes and Lens Blur's Apply and shape. */
+data class OpticsState(
+    val lensProfile: Boolean = false,
+    val removeCa: Boolean = false,
+    val blur: Boolean = false,
+    val blurShape: String = "auto",
+)
 
 /** A crop aspect ratio (width / height); 0 = the photo's own. */
 data class Aspect(val label: String, val ratio: Float)
@@ -138,8 +200,11 @@ data class Aspect(val label: String, val ratio: Float)
 data class LocalSlider(val key: String, val label: String, val min: Float, val max: Float, val decimals: Int = 0)
 
 object Tools {
+    /**
+     * The Edit tab's tools. One-tap actions (Auto, B&W, Reset…) live only in Quick edit, so nothing
+     * appears in two tabs.
+     */
     val edit = listOf(
-        Tool("auto", "Auto", ToolKind.Action),
         Tool("light", "Light", groups = listOf(Group("Light", listOf("light.")))),
         Tool(
             "color", "Color",
@@ -155,17 +220,28 @@ object Tools {
         Tool("effects", "Effects", groups = listOf(Group("Effects", listOf("effects.")), Group("Vignette", listOf("vignette.")), Group("Grain", listOf("grain.")))),
         Tool("detail", "Detail", groups = listOf(Group("Sharpening", listOf("detail.sharpen")), Group("Noise", listOf("enhance.denoise", "detail.nr")))),
         Tool("optics", "Optics", groups = listOf(Group("Lens", listOf("optics.distortion", "optics.vignetting", "optics.profile")), Group("Chromatic", listOf("optics.ca", "optics.defringe")))),
+        Tool("blur", "Lens Blur", ToolKind.LensBlur, groups = listOf(Group("Lens Blur", listOf("lensBlur.")))),
         Tool("geometry", "Geometry", groups = listOf(Group("Upright", listOf("geometry.")))),
     )
 
+    /** Quick edit's one-tap actions (background removal is in the Remove tab). */
     val quick = listOf(
         Tool("auto", "Auto", ToolKind.Action),
         Tool("pop", "Subject pop", ToolKind.Action),
         Tool("sky", "Blue sky", ToolKind.Action),
         Tool("bw", "B&W", ToolKind.Action),
-        Tool("cutout", "Remove BG", ToolKind.Action),
         Tool("reset", "Reset", ToolKind.Action),
     )
+
+    /** Quick edit's sliders: the ones most edits use, in the order they are usually reached for. */
+    val quickControls = listOf(
+        "light.exposure", "light.contrast", "light.highlights", "light.shadows", "light.whites", "light.blacks",
+        "wb.temp", "wb.tint", "color.vibrance", "color.saturation",
+        "effects.texture", "effects.clarity", "effects.dehaze", "vignette.amount",
+    )
+
+    /** Lens Blur's in-focus area when no mask sets it (`lens_blur.shape`). */
+    val blurShapes = listOf("auto" to "Subject", "round" to "Round", "wide" to "Wide", "tall" to "Tall")
 
     val masking = listOf(
         Tool("subject", "Subject", ToolKind.Action),

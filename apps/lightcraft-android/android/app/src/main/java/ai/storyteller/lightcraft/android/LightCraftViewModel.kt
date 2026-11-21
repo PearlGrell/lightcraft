@@ -84,7 +84,26 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     private val _activeMask = MutableStateFlow<Int?>(null)
     val activeMask: StateFlow<Int?> = _activeMask.asStateFlow()
 
+    private val _maskOverlay = MutableStateFlow(true)
+    /** The Masking tab tints the selected mask's area red (the engine's mask overlay). */
+    val maskOverlay: StateFlow<Boolean> = _maskOverlay.asStateFlow()
+
+    fun setMaskOverlay(on: Boolean) {
+        _maskOverlay.value = on
+        requestRender(draft = false)
+    }
+
     /** Point curves by channel (`master`, `red`, `green`, `blue`), normalized points. */
+    /** The open photo shows Temp and Tint on the relative −100…+100 scale (not a raw with a Kelvin scale). */
+    @Volatile private var relativeWb = false
+
+    /** A slider value as the engine takes it (relative Temp → Kelvin). */
+    private fun toEngine(id: String, v: Float): Float = if (relativeWb) RelativeWb.toEngine(id, v) else v
+
+    private val _optics = MutableStateFlow(OpticsState())
+    /** The Optics and Lens Blur switches (`develop.get`). */
+    val optics: StateFlow<OpticsState> = _optics.asStateFlow()
+
     private val _curves = MutableStateFlow<Map<String, List<CurvePoint>>>(emptyMap())
     val curves: StateFlow<Map<String, List<CurvePoint>>> = _curves.asStateFlow()
 
@@ -243,14 +262,19 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         if (_tab.value == MainTab.Remove) endCutout()
         _tab.value = tab
         _tool.value = when (tab) {
-            MainTab.Edit -> Tools.edit[1]
+            MainTab.Edit -> Tools.edit[0]
             MainTab.Remove -> Tools.remove[0]
             else -> null
         }
+        // the mask overlay comes and goes with the Masking tab
+        requestRender(draft = false)
         when (tab) {
             MainTab.Presets -> loadPresets()
             MainTab.Remove -> beginCutout()
-            MainTab.Masking -> viewModelScope.launch(commands) { loadState() }
+            MainTab.Masking -> viewModelScope.launch(commands) {
+                loadState()
+                requestRender(draft = false)
+            }
             else -> {}
         }
     }
@@ -261,11 +285,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             MainTab.Quick -> quickAction(tool.id)
             MainTab.Masking -> addMask(tool.id)
             MainTab.Remove -> removeAction(tool)
-            else -> if (tool.kind == ToolKind.Action) {
-                if (tool.id == "auto") runEdit("develop.auto")
-            } else {
-                _tool.value = if (_tool.value?.id == tool.id) null else tool
-            }
+            else -> _tool.value = if (_tool.value?.id == tool.id) null else tool
         }
     }
 
@@ -274,10 +294,6 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             "auto" -> runEdit("develop.auto")
             "bw" -> runEdit("develop.treatment")
             "reset" -> runEdit("develop.reset")
-            "cutout" -> {
-                selectTab(MainTab.Remove)
-                removeBackground(keepBackground = false)
-            }
             "pop" -> viewModelScope.launch(commands) {
                 if (subjectMask("Subject pop", invert = false)) {
                     withEngine { e -> e.execute("mask.adjust", JSONObject().put("values", JSONObject().put("exposure", 0.25).put("clarity", 20).put("saturation", 12))) }
@@ -302,7 +318,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(commands) {
             withEngine { e ->
                 begin(e, _controls.value.firstOrNull { it.id == id }?.label ?: "Edit")
-                e.execute("develop.set", JSONObject().put("control", id).put("value", value.toDouble()))
+                e.execute("develop.set", JSONObject().put("control", id).put("value", toEngine(id, value).toDouble()))
             }
             requestRender(draft = true)
         }
@@ -316,7 +332,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             withEngine { e ->
                 begin(e, _controls.value.firstOrNull { it.id == values.keys.first() }?.label ?: "Edit")
                 val v = JSONObject()
-                values.forEach { (id, x) -> v.put(id, x.toDouble()) }
+                values.forEach { (id, x) -> v.put(id, toEngine(id, x).toDouble()) }
                 e.execute("develop.set", JSONObject().put("values", v))
             }
             requestRender(draft = true)
@@ -344,13 +360,13 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     fun resetControl(id: String) {
         val default = _controls.value.firstOrNull { it.id == id }?.default ?: return
         _controls.value = _controls.value.map { if (it.id == id) it.copy(value = default) else it }
-        runEdit("develop.set", JSONObject().put("control", id).put("value", default.toDouble()))
+        runEdit("develop.set", JSONObject().put("control", id).put("value", toEngine(id, default).toDouble()))
     }
 
     /** Back to the defaults of every slider in [group], as one undo step. */
     fun resetGroup(group: Group) {
         val values = JSONObject()
-        _controls.value.filter { group.matches(it.id) && it.value != it.default }.forEach { values.put(it.id, it.default.toDouble()) }
+        _controls.value.filter { group.matches(it.id) && it.value != it.default }.forEach { values.put(it.id, toEngine(it.id, it.default).toDouble()) }
         if (values.length() > 0) runEdit("develop.set", JSONObject().put("values", values))
     }
 
@@ -464,6 +480,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     fun selectMask(id: Int) {
         _activeMask.value = id
         viewModelScope.launch(commands) { withEngine { e -> e.execute("mask.select", JSONObject().put("id", id)) } }
+        requestRender(draft = false)
     }
 
     fun setMaskValue(key: String, value: Float) {
@@ -600,6 +617,36 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Merge [patch] into the photo's develop settings as one undo step named [label] (`develop.merge`). */
+    private fun merge(patch: JSONObject, label: String) = runEdit("develop.merge", JSONObject().put("settings", patch).put("label", label))
+
+    /** Optics: Enable Profile Corrections (the lens's distortion and vignetting profile). */
+    fun setLensProfile(on: Boolean) {
+        _optics.value = _optics.value.copy(lensProfile = on)
+        merge(JSONObject().put("optics", JSONObject().put("lens_profile", on)), "Lens Corrections")
+    }
+
+    /** Optics: Remove Chromatic Aberration (automatic lateral CA removal). */
+    fun setRemoveCa(on: Boolean) {
+        _optics.value = _optics.value.copy(removeCa = on)
+        merge(JSONObject().put("optics", JSONObject().put("remove_ca", on)), "Remove CA")
+    }
+
+    /** Lens Blur's Apply; turning it on with no blur yet starts at 50, as the desktop app does. */
+    fun setLensBlur(on: Boolean) {
+        _optics.value = _optics.value.copy(blur = on)
+        val patch = JSONObject().put("enabled", on)
+        val amount = _controls.value.firstOrNull { it.id == "lensBlur.amount" }?.value ?: 0f
+        if (on && amount <= 0f) patch.put("amount", 50.0)
+        merge(JSONObject().put("lens_blur", patch), "Lens Blur")
+    }
+
+    /** What Lens Blur keeps in focus without a mask: `auto` (the subject), `round`, `wide` or `tall`. */
+    fun setBlurShape(shape: String) {
+        _optics.value = _optics.value.copy(blurShape = shape)
+        merge(JSONObject().put("lens_blur", JSONObject().put("shape", shape).put("area", JSONObject.NULL)), "Lens Blur Shape")
+    }
+
     private fun runEdit(id: String, params: JSONObject = JSONObject()) {
         viewModelScope.launch(commands) {
             if (interacting) {
@@ -621,10 +668,14 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     /** Sliders (`develop.controls`), point curves and masks (`develop.get`). Command thread only. */
     private fun loadState() {
         val e = engine ?: return
+        val d = runCatching { e.execute("develop.get") as? JSONObject }.getOrNull()
+        relativeWb = _editing.value?.let { runCatching { !e.kelvinWb(it) }.getOrNull() } ?: false
+        val asShot = d?.optJSONObject("wb")?.optString("mode", "")?.equals("asShot", ignoreCase = true) == true
         runCatching { e.execute("develop.controls") as? JSONArray }.getOrNull()?.let { all ->
-            _controls.value = (0 until all.length()).mapNotNull { i -> all.optJSONObject(i)?.let { runCatching { Control.fromJson(it) }.getOrNull() } }
+            val list = (0 until all.length()).mapNotNull { i -> all.optJSONObject(i)?.let { runCatching { Control.fromJson(it) }.getOrNull() } }
+            _controls.value = if (relativeWb) list.map { RelativeWb.show(it, asShot) } else list
         }
-        val d = runCatching { e.execute("develop.get") as? JSONObject }.getOrNull() ?: return
+        if (d == null) return
         d.optJSONObject("curve")?.let { c ->
             _curves.value = listOf("master", "red", "green", "blue").associateWith { ch ->
                 val pts = c.optJSONArray(ch)
@@ -632,6 +683,14 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 list.ifEmpty { listOf(CurvePoint(0f, 0f), CurvePoint(1f, 1f)) }
             }
         }
+        val o = d.optJSONObject("optics")
+        val b = d.optJSONObject("lens_blur")
+        _optics.value = OpticsState(
+            lensProfile = o?.optBoolean("lens_profile") ?: false,
+            removeCa = o?.optBoolean("remove_ca") ?: false,
+            blur = b?.optBoolean("enabled") ?: false,
+            blurShape = b?.optString("shape", "auto")?.ifEmpty { "auto" } ?: "auto",
+        )
         val masks = d.optJSONArray("masks")
         _masks.value = (0 until (masks?.length() ?: 0)).mapNotNull { i -> masks?.optJSONObject(i)?.let { MaskInfo.fromJson(it) } }
         if (_masks.value.none { it.id == _activeMask.value }) _activeMask.value = _masks.value.lastOrNull()?.id
@@ -646,7 +705,8 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         val e = engine ?: return
         val (w, h) = viewport
         val t0 = System.nanoTime()
-        runCatching { e.render(photo, w, h, draft = draft) }
+        val overlay = _activeMask.value?.takeIf { _tab.value == MainTab.Masking && _maskOverlay.value }
+        runCatching { if (overlay != null) e.renderMasked(photo, w, h, overlay.toLong(), draft) else e.render(photo, w, h, draft = draft) }
             .onSuccess {
                 if (_editing.value == photo) _preview.value = it
                 Log.d(tag, "render ${it.width}x${it.height} draft=$draft ${(System.nanoTime() - t0) / 1_000_000} ms")

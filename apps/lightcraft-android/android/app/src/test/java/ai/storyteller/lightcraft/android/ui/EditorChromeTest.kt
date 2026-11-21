@@ -78,7 +78,8 @@ class EditorChromeTest {
             Column(Modifier.fillMaxWidth().background(Lc.chrome)) {
                 panel()
                 when (tab) {
-                    MainTab.Edit -> ToolRow(Tools.edit, Tools.edit[1], true) {}
+                    MainTab.Edit -> ToolRow(Tools.edit, Tools.edit[0], false) {}
+                    MainTab.Quick -> ToolRow(Tools.quick, null, false) {}
                     MainTab.Masking -> ToolRow(Tools.masking, null, false) {}
                     MainTab.Remove -> ToolRow(Tools.remove, Tools.remove[0], false) {}
                     else -> {}
@@ -102,10 +103,38 @@ class EditorChromeTest {
         }
     }
 
-    /** A flat card like [SliderPanel]'s. */
+    /** The scrolling list under a tool, as [SliderPanel] lays it out. */
     @Composable
     private fun Card(content: @Composable () -> Unit) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).background(Lc.card).padding(start = 14.dp, end = 14.dp, bottom = 8.dp)) { content() }
+        Column(Modifier.fillMaxWidth().padding(start = 22.dp, end = 22.dp, top = 6.dp, bottom = 4.dp)) { content() }
+    }
+
+    @Test
+    fun quickEdit() = paparazzi.snapshot {
+        LightCraftTheme {
+            Editor(MainTab.Quick, {
+                Card {
+                    LrSlider("Exposure", 0.35f, -5f, 5f, 0f, 2, "EV", {}, {}, {})
+                    LrSlider("Contrast", -12f, -100f, 100f, 0f, 0, "", {}, {}, {})
+                    LrSlider("Highlights", -18f, -100f, 100f, 0f, 0, "", {}, {}, {})
+                    LrSlider("Shadows", 30f, -100f, 100f, 0f, 0, "", {}, {}, {})
+                }
+            })
+        }
+    }
+
+    @Test
+    fun optics() = paparazzi.snapshot {
+        LightCraftTheme {
+            Editor(MainTab.Edit, {
+                Card {
+                    Toggle("Enable Profile Corrections", true, Modifier.fillMaxWidth()) {}
+                    Toggle("Remove Chromatic Aberration", false, Modifier.fillMaxWidth()) {}
+                    LrSlider("Distortion", 0f, -100f, 100f, 0f, 0, "", {}, {}, {})
+                    LrSlider("Vignetting", 0f, -100f, 100f, 0f, 0, "", {}, {}, {})
+                }
+            })
+        }
     }
 
     @Test
@@ -113,7 +142,6 @@ class EditorChromeTest {
         LightCraftTheme {
             Editor(MainTab.Edit, {
                 Card {
-                    CardHeader("Color")
                     LrSlider("Temp", 0f, -100f, 100f, 0f, 0, "", {}, {}, {}, track = Track.Temp)
                     LrSlider("Tint", 0f, -150f, 150f, 0f, 0, "", {}, {}, {}, track = Track.Tint)
                     LrSlider("Vibrance", -18f, -100f, 100f, 0f, 0, "", {}, {}, {}, track = Track.Gradient(0xFF7A7A7A.toInt(), 0xFFD8406A.toInt()))

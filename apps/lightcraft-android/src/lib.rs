@@ -385,6 +385,41 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutou
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeRenderMasked<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    max_w: jint,
+    max_h: jint,
+    mask: jlong,
+    draft: jboolean,
+) -> jintArray {
+    let r = guarded(|| {
+        let mask = u32::try_from(mask).map_err(|_| format!("no mask {mask}"))?;
+        session(handle)?.render_masked(photo_id(photo)?, edge(max_w)?, edge(max_h)?, mask, draft != 0)
+    });
+    match r {
+        Ok(f) => int_array(&mut env, &frame_ints(&f)),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeKelvinWb<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+) -> jboolean {
+    let r = guarded(|| session(handle)?.kelvin_wb(photo_id(photo)?));
+    u8::from(or_throw(&mut env, r))
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutoutUndo<'l>(
     mut env: JNIEnv<'l>,
     _class: JClass<'l>,

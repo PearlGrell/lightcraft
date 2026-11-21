@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -39,6 +40,7 @@ import androidx.compose.material.icons.automirrored.outlined.RotateRight
 import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.AutoFixHigh
+import androidx.compose.material.icons.outlined.BlurOn
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Contrast
@@ -59,6 +61,8 @@ import androidx.compose.material.icons.outlined.Straighten
 import androidx.compose.material.icons.outlined.Thermostat
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Vignette
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.Wallpaper
 import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material3.CircularProgressIndicator
@@ -98,6 +102,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -114,7 +119,7 @@ import ai.storyteller.lightcraft.android.Tools
 /**
  * The editor: the photo edge to edge on black with a few icons over its top corner (back; undo,
  * redo, compare, share), and at the bottom the open tool's panel, a row of labelled tools, and the
- * bar of the six main tabs (Quick actions, Presets, Crop, Edit, Masking, Remove).
+ * bar of the six main tabs (Quick edit, Presets, Crop, Edit, Masking, Remove).
  */
 @Composable
 fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostState) {
@@ -325,7 +330,7 @@ private fun BottomChrome(vm: LightCraftViewModel, tab: MainTab, tool: Tool?) {
             MainTab.Remove -> Tools.remove
             else -> emptyList()
         }
-        if (row.isNotEmpty()) ToolRow(row, tool, divideAfterFirst = tab == MainTab.Edit, onSelect = vm::selectTool)
+        if (row.isNotEmpty()) ToolRow(row, tool, divideAfterFirst = false, onSelect = vm::selectTool)
         Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF2E2E2E)))
         MainBar(tab, vm::selectTab)
     }
@@ -345,9 +350,77 @@ private fun Panel(vm: LightCraftViewModel, tab: MainTab, tool: Tool?) {
                 CurveEditor(curves, vm::setCurve, vm::finishInteraction, vm::resetCurve)
             }
             ToolKind.Sliders -> SliderPanel(vm, tool, controls)
+            ToolKind.LensBlur -> LensBlurPanel(vm, controls)
             else -> {}
         }
-        MainTab.Quick -> {}
+        MainTab.Quick -> QuickPanel(vm, controls)
+    }
+}
+
+/** The scrolling list under a tool: full width, as tall as [max] at most. */
+@Composable
+private fun ScrollList(max: Dp = 210.dp, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(max = max)
+            .verticalScroll(rememberScrollState())
+            .padding(start = 22.dp, end = 22.dp, top = 6.dp, bottom = 4.dp),
+        content = content,
+    )
+}
+
+/** Engine sliders as rows, each its own key so a drag survives recomposition. */
+@Composable
+private fun Sliders(vm: LightCraftViewModel, controls: List<Control>, enabled: Boolean = true) {
+    controls.forEach { c ->
+        key(c.id) {
+            LrSlider(
+                c.label, c.value, c.min, c.max, c.default, c.decimals, c.unit,
+                onChange = { if (enabled) vm.setControl(c.id, it) },
+                onDone = vm::finishInteraction,
+                onReset = { if (enabled) vm.resetControl(c.id) },
+                modifier = if (enabled) Modifier else Modifier.graphicsLayer { alpha = 0.4f },
+                track = c.track,
+            )
+        }
+    }
+}
+
+/** Quick edit: the sliders most edits use, above the one-tap actions. */
+@Composable
+private fun QuickPanel(vm: LightCraftViewModel, all: List<Control>) {
+    val byId = all.associateBy { it.id }
+    val controls = Tools.quickControls.mapNotNull { byId[it] }
+    if (controls.isEmpty()) return
+    ScrollList { Sliders(vm, controls) }
+}
+
+/** Lens Blur: Apply, what stays in focus, then Amount, Boost and Transition. */
+@Composable
+private fun LensBlurPanel(vm: LightCraftViewModel, all: List<Control>) {
+    val state by vm.optics.collectAsStateWithLifecycle()
+    ScrollList {
+        Toggle("Apply", state.blur, Modifier.fillMaxWidth()) { vm.setLensBlur(it) }
+        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("In focus", fontSize = 14.sp, color = Lc.label, modifier = Modifier.weight(1f))
+            Tools.blurShapes.forEach { (id, label) ->
+                val on = state.blurShape == id
+                Text(
+                    label,
+                    fontSize = 13.sp,
+                    color = if (on) Color.White else Lc.label,
+                    modifier = Modifier
+                        .padding(start = 6.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (on) Lc.accent else Lc.raised)
+                        .graphicsLayer { alpha = if (state.blur) 1f else 0.4f }
+                        .clickable(enabled = state.blur) { vm.setBlurShape(id) }
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                )
+            }
+        }
+        Sliders(vm, all.filter { it.id.startsWith("lensBlur.") }, enabled = state.blur)
     }
 }
 
@@ -361,17 +434,8 @@ private fun SliderPanel(vm: LightCraftViewModel, tool: Tool, all: List<Control>)
     val controls = all.filter { group.matches(it.id) }
     Column(Modifier.fillMaxWidth()) {
         if (groups.size > 1) Pills(groups.map { it.title }, groups.indexOf(group), { selected = it }, onReset = { vm.resetGroup(group) })
-        // one flat card per group, as in the reference: a small header, then the controls
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp)
-                .clip(RoundedCornerShape(4.dp))
-                .background(Lc.card)
-                .heightIn(max = if (group.style == GroupStyle.Grading) 330.dp else 230.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(start = 14.dp, end = 14.dp, bottom = 8.dp),
-        ) {
+        ScrollList(max = if (group.style == GroupStyle.Grading) 300.dp else 210.dp) {
+            if (tool.id == "optics") OpticsSwitches(vm)
             when (group.style) {
                 GroupStyle.Mixer -> MixerPanel(controls, band, { band = it }, vm::setControl, vm::finishInteraction, vm::resetControl)
                 GroupStyle.Grading -> GradingPanel(
@@ -381,23 +445,18 @@ private fun SliderPanel(vm: LightCraftViewModel, tool: Tool, all: List<Control>)
                     onDone = vm::finishInteraction,
                     onReset = vm::resetControl,
                 )
-                GroupStyle.Sliders -> {
-                    CardHeader(group.title)
-                    controls.forEach { c ->
-                        key(c.id) {
-                            LrSlider(
-                                c.label, c.value, c.min, c.max, c.default, c.decimals, c.unit,
-                                onChange = { vm.setControl(c.id, it) },
-                                onDone = vm::finishInteraction,
-                                onReset = { vm.resetControl(c.id) },
-                                track = c.track,
-                            )
-                        }
-                    }
-                }
+                GroupStyle.Sliders -> Sliders(vm, controls)
             }
         }
     }
+}
+
+/** Optics' two checkboxes, above its sliders. */
+@Composable
+private fun OpticsSwitches(vm: LightCraftViewModel) {
+    val state by vm.optics.collectAsStateWithLifecycle()
+    Toggle("Enable Profile Corrections", state.lensProfile, Modifier.fillMaxWidth()) { vm.setLensProfile(it) }
+    Toggle("Remove Chromatic Aberration", state.removeCa, Modifier.fillMaxWidth()) { vm.setRemoveCa(it) }
 }
 
 @Composable
@@ -516,6 +575,14 @@ private fun MaskPanel(vm: LightCraftViewModel) {
                     )
                 }
             }
+            val overlay by vm.maskOverlay.collectAsStateWithLifecycle()
+            IconButton(onClick = { vm.setMaskOverlay(!overlay) }) {
+                Icon(
+                    if (overlay) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                    if (overlay) "Hide mask overlay" else "Show mask overlay",
+                    tint = if (overlay) Lc.accent else Lc.label,
+                )
+            }
             IconButton(onClick = { vm.maskCommand("mask.invert") }) { Icon(Icons.Outlined.InvertColors, "Invert mask", tint = Lc.label) }
             IconButton(onClick = { vm.maskCommand("mask.delete") }) { Icon(Icons.Outlined.Delete, "Delete mask", tint = Lc.label) }
         }
@@ -607,6 +674,7 @@ private fun iconOf(t: Tool, tab: MainTab): ImageVector = when (tab) {
         "effects" -> Icons.Outlined.Vignette
         "detail" -> Icons.Outlined.Details
         "optics" -> Icons.Outlined.CameraAlt
+        "blur" -> Icons.Outlined.BlurOn
         else -> Icons.Outlined.Straighten
     }
 }

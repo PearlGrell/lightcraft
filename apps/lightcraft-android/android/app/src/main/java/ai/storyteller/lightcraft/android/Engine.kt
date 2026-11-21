@@ -49,6 +49,13 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
     fun render(photo: Long, maxW: Int, maxH: Int, before: Boolean = false, draft: Boolean = false): Bitmap =
         bitmap(nativeRender(live(), photo, maxW, maxH, before, draft))
 
+    /** Whether [photo]'s Temp is a real Kelvin scale (a raw with camera colour data); else it is −100…+100. */
+    fun kelvinWb(photo: Long): Boolean = nativeKelvinWb(live(), photo)
+
+    /** [render] with mask [mask]'s selected area tinted red over the edited photo (the Masking tab's overlay). */
+    fun renderMasked(photo: Long, maxW: Int, maxH: Int, mask: Long, draft: Boolean = false): Bitmap =
+        bitmap(nativeRenderMasked(live(), photo, maxW, maxH, mask, draft))
+
     /** A grid thumbnail whose long edge is at least [longEdge]. */
     fun thumbnail(photo: Long, longEdge: Int): Bitmap = bitmap(nativeThumbnail(live(), photo, longEdge))
 
@@ -115,6 +122,8 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeCutoutBegin(handle: Long, photo: Long, longEdge: Int): IntArray
         @JvmStatic private external fun nativeCutoutMatte(handle: Long, side: Int, probs: FloatArray, invert: Boolean)
         @JvmStatic private external fun nativeCutoutErase(handle: Long, x: Float, y: Float, tolerance: Float, contiguous: Boolean, sample: Int, antiAlias: Boolean, feather: Float, opacity: Float): Int
+        @JvmStatic private external fun nativeRenderMasked(handle: Long, photo: Long, maxW: Int, maxH: Int, mask: Long, draft: Boolean): IntArray
+        @JvmStatic private external fun nativeKelvinWb(handle: Long, photo: Long): Boolean
         @JvmStatic private external fun nativeCutoutUndo(handle: Long): Boolean
         @JvmStatic private external fun nativeCutoutReset(handle: Long)
         @JvmStatic private external fun nativeCutoutFrame(handle: Long): IntArray

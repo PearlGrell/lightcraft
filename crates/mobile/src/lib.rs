@@ -20,6 +20,9 @@ use serde_json::{Value, json};
 
 pub use lightcraft_bgremove::EraseOptions;
 
+/// The mask overlay's colour (the desktop's default).
+const OVERLAY_RED: [u8; 3] = [230, 30, 40];
+
 /// The largest edge a render may ask for (a phone screen is ≤ 4K; exports go through `export.*`).
 pub const MAX_EDGE: usize = 8192;
 
@@ -150,6 +153,31 @@ impl Mobile {
             let job = if before { s.render_job(PhotoId(photo), w, h, true, true) } else { s.loupe_job(PhotoId(photo), w, h, true) };
             job.ok_or_else(|| format!("no photo {photo}"))?
         };
+        run(if draft { job.draft() } else { job })
+    }
+
+    /// Whether `photo`'s Temp slider is a real Kelvin scale: a raw file whose camera gives it one.
+    /// Otherwise (JPEG, HEIC, PNG…, or a raw without colour data) the app shows Temp as −100…+100,
+    /// as the desktop does for rendered files.
+    pub fn kelvin_wb(&self, photo: u64) -> Result<bool, String> {
+        let s = self.lock();
+        let p = s.catalog.photo(PhotoId(photo)).ok_or_else(|| format!("no photo {photo}"))?;
+        Ok(p.develops_raw() && !p.relative_wb())
+    }
+
+    /// [`Mobile::render`] with mask `mask`'s selected area tinted red at half strength over the
+    /// edited photo, as the desktop's mask overlay draws it: what the Masking tab shows, so a radial,
+    /// linear, brush, subject, background or sky mask shows which parts it covers. Never cached as
+    /// the photo's preview.
+    pub fn render_masked(&self, photo: u64, max_w: u32, max_h: u32, mask: u32, draft: bool) -> Result<Frame, String> {
+        use lightcraft_engine::pipeline::{MaskView, Overlay};
+        let (w, h) = (clamp_edge(max_w)?, clamp_edge(max_h)?);
+        let id = u16::try_from(mask).map_err(|_| format!("no mask {mask}"))?;
+        let job = {
+            let mut s = self.lock();
+            s.render_job(PhotoId(photo), w, h, false, true).ok_or_else(|| format!("no photo {photo}"))?
+        };
+        let job = job.with_overlay(Overlay::Mask { id, view: MaskView::Color, color: OVERLAY_RED, opacity: 50 });
         run(if draft { job.draft() } else { job })
     }
 
@@ -371,6 +399,70 @@ mod tests {
         // the before view still shows the unedited look
         let unedited = m.render(id, 160, 120, true, false).unwrap();
         assert_eq!(mean(&unedited), mean(&before));
+    }
+
+    #[test]
+    fn optics_switches_and_lens_blur_round_trip_as_the_app_sends_them() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        assert_eq!(parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()))["ok"], true);
+        let merge = |patch: Value, label: &str| parse(&m.execute("develop.merge", &json!({"settings": patch, "label": label}).to_string()));
+        let get = || parse(&m.execute("develop.get", ""))["result"].clone();
+        let before = m.render(id, 160, 120, false, false).unwrap();
+
+        // Optics: Enable Profile Corrections and Remove Chromatic Aberration
+        assert_eq!(merge(json!({"optics": {"lens_profile": true}}), "Lens Corrections")["ok"], true);
+        assert_eq!(merge(json!({"optics": {"remove_ca": true}}), "Remove CA")["ok"], true);
+        let d = get();
+        assert_eq!(d["optics"]["lens_profile"], true, "{d}");
+        assert_eq!(d["optics"]["remove_ca"], true, "{d}");
+
+        // Lens Blur: Apply (with the starting amount) and a fixed focus shape
+        assert_eq!(merge(json!({"lens_blur": {"enabled": true, "amount": 50.0}}), "Lens Blur")["ok"], true);
+        assert_eq!(merge(json!({"lens_blur": {"shape": "round", "area": null}}), "Lens Blur Shape")["ok"], true);
+        let d = get();
+        assert_eq!(d["lens_blur"]["enabled"], true, "{d}");
+        assert_eq!(d["lens_blur"]["shape"], "round", "{d}");
+        let ctl = parse(&m.execute("develop.controls", ""));
+        assert!(ctl["result"].as_array().unwrap().iter().any(|c| c["id"] == "lensBlur.amount"), "the Lens Blur sliders are develop controls");
+        let after = m.render(id, 160, 120, false, false).unwrap();
+        assert_ne!(after.rgba, before.rgba, "Lens Blur changes the render");
+        // a shape the engine doesn't know is not a crash
+        assert!(parse(&m.execute("develop.merge", r#"{"settings": {"lens_blur": {"shape": 7}}}"#)).get("ok").is_some());
+    }
+
+    #[test]
+    fn rendered_files_use_the_relative_temperature_scale() {
+        let m = Mobile::demo();
+        // the demo photos are generated pictures, not raws: no Kelvin scale
+        assert_eq!(m.kelvin_wb(m.photos()[0]), Ok(false));
+        assert!(m.kelvin_wb(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn the_mask_overlay_tints_what_a_radial_mask_selects() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        assert_eq!(parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()))["ok"], true);
+        let r = parse(&m.execute("mask.add", &json!({"kind": "radial", "name": "Radial"}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let d = parse(&m.execute("develop.get", ""))["result"].clone();
+        let mask = d["masks"][0]["id"].as_u64().unwrap() as u32;
+        let plain = m.render(id, 160, 120, false, false).unwrap();
+        let tinted = m.render_masked(id, 160, 120, mask, false).unwrap();
+        assert_eq!((plain.width, plain.height), (tinted.width, tinted.height));
+        // the centre is inside the radial mask: redder than the plain render there; a corner is not
+        let at = |f: &Frame, x: u32, y: u32| {
+            let i = ((y * f.width + x) * 4) as usize;
+            (i32::from(f.rgba[i]), i32::from(f.rgba[i + 1]), i32::from(f.rgba[i + 2]))
+        };
+        let (cx, cy) = (plain.width / 2, plain.height / 2);
+        let (p, t) = (at(&plain, cx, cy), at(&tinted, cx, cy));
+        assert!(t.0 - t.1 > p.0 - p.1 + 20, "centre not tinted: {p:?} → {t:?}");
+        assert_eq!(at(&plain, 0, 0), at(&tinted, 0, 0), "a corner outside the mask stays as it was");
+        // the overlay never becomes the photo's preview
+        assert_eq!(m.render(id, 160, 120, false, false).unwrap(), plain);
+        assert!(m.render_masked(id, 160, 120, u32::MAX, false).is_err());
     }
 
     #[test]

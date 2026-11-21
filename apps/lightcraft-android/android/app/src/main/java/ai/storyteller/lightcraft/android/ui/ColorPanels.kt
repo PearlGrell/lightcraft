@@ -116,7 +116,6 @@ internal fun GradingPanel(
     val sat = controls.firstOrNull { it.id == "grading.${r.id}.sat" }
     val lum = controls.firstOrNull { it.id == "grading.${r.id}.lum" }
     Column(Modifier.fillMaxWidth()) {
-        CardHeader("Color Grading")
         Pills(Ranges.all.map { it.label }, range, onRange, onReset = null, padded = false)
         if (hue != null && sat != null) {
             Text(r.label, fontSize = 15.sp, color = Lc.text, modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 2.dp, bottom = 6.dp))
