@@ -6,6 +6,8 @@
 //! `check` works on already-read file contents so it is unit-testable without the real tree.
 //!
 //! Exception: `crates/wincolor` calls Windows' colour APIs, so it is exempt too (see its module docs).
+//! Exception (documented in AGENTS.md): `apps/lightcraft-android` is the JNI glue, whose entry points
+//! need `#[unsafe(no_mangle)]`, an attribute the `unsafe_code` lint covers; it has no `unsafe` blocks.
 //! Exception (documented in AGENTS.md): `crates/sysmem` holds LightCraft's other allowed `unsafe`
 //! (one FFI call), so it is exempt from `forbid(unsafe_code)` — it still needs the deny list, and
 //! carries it.
@@ -16,7 +18,7 @@ const DENY_LINTS: &[&str] =
     &["clippy::unwrap_used", "clippy::expect_used", "clippy::panic", "clippy::unimplemented", "clippy::todo", "clippy::unreachable"];
 
 /// Crate roots exempt from `forbid(unsafe_code)` (they still need the deny list).
-const UNSAFE_EXCEPTION: &[&str] = &["lightcraft-sysmem", "lightcraft-wincolor"];
+const UNSAFE_EXCEPTION: &[&str] = &["lightcraft-sysmem", "lightcraft-wincolor", "lightcraft-android"];
 
 #[derive(Debug, Clone)]
 pub struct CrateRoot {
