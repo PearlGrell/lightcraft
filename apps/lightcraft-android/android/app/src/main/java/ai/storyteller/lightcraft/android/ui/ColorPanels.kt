@@ -214,7 +214,12 @@ internal fun ColorWheel(
         // Compose sweeps clockwise from 3 o'clock on screen: list the hues backwards for a
         // counter-clockwise wheel
         drawCircle(Brush.sweepGradient(rainbow.reversed(), c), radius, c)
-        drawCircle(Brush.radialGradient(listOf(Color.White, Color.White.copy(alpha = 0f)), c, radius), radius, c)
+        // white only near the centre (saturation 0), the rim fully saturated, as in the reference
+        drawCircle(
+            Brush.radialGradient(0f to Color.White, 0.3f to Color.White.copy(alpha = 0.45f), 0.75f to Color.White.copy(alpha = 0f), center = c, radius = radius),
+            radius,
+            c,
+        )
         val a = Math.toRadians(hue.toDouble())
         val d = sat.coerceIn(0f, 1f) * radius
         val puck = Offset(c.x + (cos(a) * d).toFloat(), c.y - (sin(a) * d).toFloat())
