@@ -1,0 +1,18 @@
+[package]
+name = "lightcraft-nn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LightCraft's ONNX runner (L1): reads a model file (bounded, hostile-input safe) and runs it eagerly on candle tensors, for the optional AI models (selection, inpainting, detection, depth, matting, restoration)"
+
+[lints]
+workspace = true
+
+[dependencies]
+candle-core = { workspace = true }
+half = "2"
+rayon = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+lightcraft-testkit = { workspace = true }
