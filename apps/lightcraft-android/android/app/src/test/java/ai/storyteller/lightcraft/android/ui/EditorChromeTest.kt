@@ -23,7 +23,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import ai.storyteller.lightcraft.android.Bands
+import ai.storyteller.lightcraft.android.Control
 import ai.storyteller.lightcraft.android.CurvePoint
+import ai.storyteller.lightcraft.android.Track
 import ai.storyteller.lightcraft.android.MainTab
 import ai.storyteller.lightcraft.android.Tools
 import app.cash.paparazzi.DeviceConfig
@@ -97,6 +100,49 @@ class EditorChromeTest {
                 }
             }, compare = true)
         }
+    }
+
+    /** A flat card like [SliderPanel]'s. */
+    @Composable
+    private fun Card(content: @Composable () -> Unit) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).background(Lc.card).padding(start = 14.dp, end = 14.dp, bottom = 8.dp)) { content() }
+    }
+
+    @Test
+    fun color() = paparazzi.snapshot {
+        LightCraftTheme {
+            Editor(MainTab.Edit, {
+                Card {
+                    CardHeader("Color")
+                    LrSlider("Temp", 0f, -100f, 100f, 0f, 0, "", {}, {}, {}, track = Track.Temp)
+                    LrSlider("Tint", 0f, -150f, 150f, 0f, 0, "", {}, {}, {}, track = Track.Tint)
+                    LrSlider("Vibrance", -18f, -100f, 100f, 0f, 0, "", {}, {}, {}, track = Track.Gradient(0xFF7A7A7A.toInt(), 0xFFD8406A.toInt()))
+                    LrSlider("Saturation", -12f, -100f, 100f, 0f, 0, "", {}, {}, {}, track = Track.Gradient(0xFF7A7A7A.toInt(), 0xFFE04A3A.toInt()))
+                }
+            })
+        }
+    }
+
+    private fun ctl(id: String, value: Float, min: Float, max: Float, track: Track = Track.Plain) =
+        Control(id, id, "", min, max, 0f, 0, value, "", track)
+
+    @Test
+    fun mixer() = paparazzi.snapshot {
+        val controls = Bands.all.indices.flatMap { i ->
+            val b = Bands.all[i].id
+            listOf(ctl("mixer.$b.hue", 5f, -100f, 100f, Track.Hue(i)), ctl("mixer.$b.sat", -30f, -100f, 100f, Track.Sat(i)), ctl("mixer.$b.lum", 8f, -100f, 100f, Track.Lum(i)))
+        }
+        LightCraftTheme { Editor(MainTab.Edit, { Card { MixerPanel(controls, 0, {}, { _, _ -> }, {}, {}) } }) }
+    }
+
+    @Test
+    fun grading() = paparazzi.snapshot {
+        val controls = listOf(
+            ctl("grading.shadows.hue", 205f, 0f, 360f, Track.Rainbow),
+            ctl("grading.shadows.sat", 18f, 0f, 100f),
+            ctl("grading.shadows.lum", 5f, -100f, 100f, Track.Centered),
+        )
+        LightCraftTheme { Editor(MainTab.Edit, { Card { GradingPanel(controls, 0, {}, { _, _, _, _ -> }, { _, _ -> }, {}, {}) } }) }
     }
 
     @Test

@@ -20,8 +20,13 @@ object Lc {
     val text = Color(0xFFF2F2F2)
     val label = Color(0xFFC8C8C8)
     val muted = Color(0xFF8A8A8A)
-    val track = Color(0xFF6A6A6A)
+    val track = Color(0xFF5E5E5E)
     val thumb = Color(0xFF2E2E2E)
+    /** Inside the slider's ring thumb (the panel colour, so the track doesn't show through). */
+    val knobFill = Color(0xFF242424)
+    /** The flat card the tool panels sit on. */
+    val card = Color(0xFF242424)
+    val cardHeader = Color(0xFFB4B4B4)
     val accent = Color(0xFF2F7DF6)
     val pill = Color(0xCC1A1A1A)
 }

@@ -25,6 +25,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -70,6 +72,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -100,6 +104,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ai.storyteller.lightcraft.android.Control
 import ai.storyteller.lightcraft.android.EraseSettings
+import ai.storyteller.lightcraft.android.GroupStyle
 import ai.storyteller.lightcraft.android.LightCraftViewModel
 import ai.storyteller.lightcraft.android.MainTab
 import ai.storyteller.lightcraft.android.Tool
@@ -350,26 +355,54 @@ private fun Panel(vm: LightCraftViewModel, tab: MainTab, tool: Tool?) {
 private fun SliderPanel(vm: LightCraftViewModel, tool: Tool, all: List<Control>) {
     val groups = tool.groups.filter { g -> all.any { g.matches(it.id) } }
     var selected by remember(tool.id) { mutableIntStateOf(0) }
+    var band by rememberSaveable { mutableIntStateOf(0) }
+    var range by rememberSaveable { mutableIntStateOf(1) }
     val group = groups.getOrNull(selected) ?: groups.firstOrNull() ?: return
     val controls = all.filter { group.matches(it.id) }
     Column(Modifier.fillMaxWidth()) {
         if (groups.size > 1) Pills(groups.map { it.title }, groups.indexOf(group), { selected = it }, onReset = { vm.resetGroup(group) })
-        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 210.dp), contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 6.dp, bottom = 4.dp)) {
-            items(controls, key = { it.id }) { c ->
-                LrSlider(
-                    c.label, c.value, c.min, c.max, c.default, c.decimals, c.unit,
-                    onChange = { vm.setControl(c.id, it) },
+        // one flat card per group, as in the reference: a small header, then the controls
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Lc.card)
+                .heightIn(max = if (group.style == GroupStyle.Grading) 330.dp else 230.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(start = 14.dp, end = 14.dp, bottom = 8.dp),
+        ) {
+            when (group.style) {
+                GroupStyle.Mixer -> MixerPanel(controls, band, { band = it }, vm::setControl, vm::finishInteraction, vm::resetControl)
+                GroupStyle.Grading -> GradingPanel(
+                    controls, range, { range = it },
+                    onWheel = { hueId, hue, satId, sat -> vm.setControls(mapOf(hueId to hue, satId to sat)) },
+                    onChange = vm::setControl,
                     onDone = vm::finishInteraction,
-                    onReset = { vm.resetControl(c.id) },
+                    onReset = vm::resetControl,
                 )
+                GroupStyle.Sliders -> {
+                    CardHeader(group.title)
+                    controls.forEach { c ->
+                        key(c.id) {
+                            LrSlider(
+                                c.label, c.value, c.min, c.max, c.default, c.decimals, c.unit,
+                                onChange = { vm.setControl(c.id, it) },
+                                onDone = vm::finishInteraction,
+                                onReset = { vm.resetControl(c.id) },
+                                track = c.track,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-internal fun Pills(titles: List<String>, selected: Int, onSelect: (Int) -> Unit, onReset: (() -> Unit)?) {
-    Row(Modifier.fillMaxWidth().height(44.dp).padding(start = 14.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+internal fun Pills(titles: List<String>, selected: Int, onSelect: (Int) -> Unit, onReset: (() -> Unit)?, padded: Boolean = true) {
+    Row(Modifier.fillMaxWidth().height(44.dp).padding(start = if (padded) 14.dp else 0.dp, end = if (padded) 10.dp else 0.dp), verticalAlignment = Alignment.CenterVertically) {
         LazyRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             items(titles.size) { i ->
                 val on = i == selected

@@ -13,6 +13,7 @@ data class Control(
     val decimals: Int,
     val value: Float,
     val unit: String = "",
+    val track: Track = Track.Plain,
 ) {
     companion object {
         fun fromJson(o: JSONObject): Control {
@@ -31,17 +32,91 @@ data class Control(
                     "wb.temp" -> "K"
                     else -> ""
                 },
+                track = Track.fromJson(o.optJSONObject("track")),
             )
         }
     }
 }
 
 /**
- * A sub-panel of a tool ("Mix" under Color…): the engine controls whose id starts with one of
+ * How a slider's track is drawn, from the engine's control spec (`track` in `develop.controls`):
+ * plain grey, or a colour gradient that shows what the slider does (Temp blue → yellow…).
+ */
+sealed interface Track {
+    data object Plain : Track
+    data object Centered : Track
+    data object Temp : Track
+    data object Tint : Track
+    data object Rainbow : Track
+    data class Gradient(val from: Int, val to: Int) : Track
+    data class Hue(val band: Int) : Track
+    data class Sat(val band: Int) : Track
+    data class Lum(val band: Int) : Track
+
+    companion object {
+        fun fromJson(o: JSONObject?): Track {
+            if (o == null) return Plain
+            val band = o.optInt("band", 0).coerceIn(0, Bands.all.size - 1)
+            return when (o.optString("kind")) {
+                "centered" -> Centered
+                "temp" -> Temp
+                "tint" -> Tint
+                "rainbow" -> Rainbow
+                "hue" -> Hue(band)
+                "sat" -> Sat(band)
+                "lum" -> Lum(band)
+                "gradient" -> {
+                    val from = parseHex(o.optString("from")) ?: return Plain
+                    val to = parseHex(o.optString("to")) ?: return Plain
+                    Gradient(from, to)
+                }
+                else -> Plain
+            }
+        }
+
+        /** `#rrggbb` → opaque ARGB, or null when it isn't one. */
+        fun parseHex(s: String): Int? {
+            val h = s.removePrefix("#")
+            if (h.length != 6) return null
+            return h.toLongOrNull(16)?.let { (0xFF000000 or it).toInt() }
+        }
+    }
+}
+
+/** A colour band of the HSL mixer (`mixer.<id>.hue|sat|lum`), with the colour its swatch shows. */
+data class Band(val id: String, val label: String, val argb: Int)
+
+object Bands {
+    val all = listOf(
+        Band("red", "Red", 0xFFF0463C.toInt()),
+        Band("orange", "Orange", 0xFFF39A2B.toInt()),
+        Band("yellow", "Yellow", 0xFFE8D33A.toInt()),
+        Band("green", "Green", 0xFF45C35A.toInt()),
+        Band("aqua", "Aqua", 0xFF3CC6C6.toInt()),
+        Band("blue", "Blue", 0xFF4677F0.toInt()),
+        Band("purple", "Purple", 0xFF9757EC.toInt()),
+        Band("magenta", "Magenta", 0xFFDE4CC4.toInt()),
+    )
+}
+
+/** A colour grading range (`grading.<id>.hue|sat|lum`). */
+data class Range(val id: String, val label: String)
+
+object Ranges {
+    val all = listOf(Range("shadows", "Shadows"), Range("midtones", "Midtones"), Range("highlights", "Highlights"), Range("global", "Global"))
+}
+
+/**
+ * A sub-panel of a tool ("Mixer" under Color…): the engine controls whose id starts with one of
  * [prefixes] and none of [exclude], in the engine's order. Driven by the engine's control list, so
  * every slider the engine has shows up without a second list to keep in sync.
  */
-data class Group(val title: String, val prefixes: List<String>, val exclude: List<String> = emptyList()) {
+data class Group(
+    val title: String,
+    val prefixes: List<String>,
+    val exclude: List<String> = emptyList(),
+    val style: GroupStyle = GroupStyle.Sliders,
+) {
     fun matches(id: String) = prefixes.any { id.startsWith(it) } && exclude.none { id.startsWith(it) }
 }
 
@@ -49,6 +124,9 @@ data class Group(val title: String, val prefixes: List<String>, val exclude: Lis
 enum class MainTab(val label: String) { Quick("Quick actions"), Presets("Presets"), Crop("Crop"), Edit("Edit"), Masking("Masking"), Remove("Remove") }
 
 enum class ToolKind { Sliders, Action, Curve }
+
+/** How a group's controls are laid out: a list of sliders, the colour mixer, or the grading wheels. */
+enum class GroupStyle { Sliders, Mixer, Grading }
 
 /** A labelled tool of the row above the bottom bar. */
 data class Tool(val id: String, val label: String, val kind: ToolKind = ToolKind.Sliders, val groups: List<Group> = emptyList())
@@ -67,8 +145,8 @@ object Tools {
             "color", "Color",
             groups = listOf(
                 Group("Color", listOf("wb.", "color.")),
-                Group("Mix", listOf("mixer.")),
-                Group("Grading", listOf("grading.")),
+                Group("Mixer", listOf("mixer."), style = GroupStyle.Mixer),
+                Group("Grading", listOf("grading."), style = GroupStyle.Grading),
                 Group("B&W", listOf("bw.")),
                 Group("Calibration", listOf("calibration.")),
             ),

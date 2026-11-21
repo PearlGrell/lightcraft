@@ -308,6 +308,21 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Several sliders moved together (the grading wheel sets hue and saturation): one command, one render. */
+    fun setControls(values: Map<String, Float>) {
+        if (values.isEmpty()) return
+        _controls.value = _controls.value.map { c -> values[c.id]?.let { c.copy(value = it) } ?: c }
+        viewModelScope.launch(commands) {
+            withEngine { e ->
+                begin(e, _controls.value.firstOrNull { it.id == values.keys.first() }?.label ?: "Edit")
+                val v = JSONObject()
+                values.forEach { (id, x) -> v.put(id, x.toDouble()) }
+                e.execute("develop.set", JSONObject().put("values", v))
+            }
+            requestRender(draft = true)
+        }
+    }
+
     private fun begin(e: Engine, label: String) {
         if (!interacting) {
             e.execute("develop.beginInteraction", JSONObject().put("label", label))
