@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use lightcraft_ai::select::{Selector, Tap};
-use lightcraft_ai::{Rgb8, Status, Store, detect, inpaint, models};
+use lightcraft_ai::{Rgb8, Status, Store, depth, detect, inpaint, models};
 
 fn store(id: &str) -> Option<Store> {
     let Some(dir) = std::env::var_os("LIGHTCRAFT_AI_MODELS") else {
@@ -76,4 +76,26 @@ fn detection_runs_and_boxes_stay_on_the_photo() {
     assert!(!found.is_empty());
     assert!(found.iter().all(|d| d.x0 <= d.x1 && d.y0 <= d.y1 && d.x1 <= 1.0 && d.y1 <= 1.0));
     assert!(found.windows(2).all(|w| w[0].score >= w[1].score), "best first");
+}
+
+#[test]
+fn depth_puts_the_floor_near_and_the_sky_far() {
+    let Some(s) = store(models::DEPTH) else { return };
+    // a sky over a ground plane whose texture grows coarser toward the bottom (nearer)
+    let (w, h) = (640usize, 480usize);
+    let mut d = Vec::with_capacity(w * h * 3);
+    for y in 0..h {
+        for x in 0..w {
+            if y < h / 2 {
+                d.extend([120u8, 170, 230]);
+            } else {
+                let k = 2 + (y - h / 2) / 12;
+                let v = if ((x / k) + (y / k)) % 2 == 0 { 90u8 } else { 140 };
+                d.extend([v / 2 + 20, v, v / 3]);
+            }
+        }
+    }
+    let g = depth::estimate(&s, &Rgb8::new(w, h, d).unwrap(), 64, None).unwrap();
+    let at = |u: f32, v: f32| g[(v * 64.0) as usize * 64 + (u * 64.0) as usize];
+    assert!(at(0.5, 0.95) > at(0.5, 0.1), "the bottom of the ground is nearer than the sky");
 }

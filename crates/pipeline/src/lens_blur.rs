@@ -222,6 +222,38 @@ fn focus_with(img: &Rgb32f, s: &DevelopSettings, frame: &Frame, mattes: Option<&
     a
 }
 
+/// The stored depth map ([`lightcraft_develop::LensBlur::depth`]) at each output pixel (0 far ..
+/// 1 near), sampled through the frame as an AI selection's grid is; `None` without one.
+fn depth_plane(img: &Rgb32f, s: &DevelopSettings, frame: &Frame, mattes: Option<&Mattes>) -> Option<Plane> {
+    let depth = s.lens_blur.depth.clone()?;
+    let (w, h) = (img.width, img.height);
+    let log_l = img.map(crate::local::log_lum);
+    let shape = MaskShape::Object { hint: vec![], exclude: vec![], seg: Some(depth), detail: vec![], edge: 0.0 };
+    let p = masks::shape_alpha(&shape, frame, w, h, img, &log_l, 0.0, mattes);
+    (p.data.len() == w * h).then_some(p)
+}
+
+/// The circle of confusion (0..1) from depth: what is in focus stays sharp; elsewhere the blur
+/// grows with how far the depth is from the in-focus area's (its focus-weighted median), reaching
+/// full blur at a depth difference set by Transition (higher: a slower, deeper falloff).
+fn depth_coc(focus: &Plane, depth: &Plane, transition: f64) -> Vec<f32> {
+    let mut weighted: Vec<(f32, f32)> =
+        focus.data.iter().zip(&depth.data).filter(|(f, d)| **f > 0.5 && d.is_finite()).map(|(f, d)| (*d, *f)).collect();
+    if weighted.is_empty() {
+        weighted = focus.data.iter().zip(&depth.data).filter(|(_, d)| d.is_finite()).map(|(f, d)| (*d, f.max(1e-3))).collect();
+    }
+    weighted.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let total: f32 = weighted.iter().map(|(_, w)| w).sum();
+    let mut acc = 0.0;
+    let focal = weighted.iter().find(|(_, w)| {
+        acc += w;
+        acc >= total / 2.0
+    });
+    let focal = focal.map_or(0.5, |(d, _)| *d);
+    let range = (0.06 + 0.5 * (transition / 100.0).clamp(0.0, 1.0)) as f32;
+    focus.data.iter().zip(&depth.data).map(|(f, d)| (1.0 - f) * ((d - focal).abs() / range).clamp(0.0, 1.0)).collect()
+}
+
 /// Long edge of the small render [`subject_point`] looks at.
 const SUBJECT_EDGE: usize = 256;
 
@@ -336,9 +368,15 @@ pub fn apply_with(
     if r >= 0.5 {
         let focus = crate::timed("lens blur focus", || focus_with(img, s, frame, mattes, subject));
         if focus.data.len() == img.data.len() {
-            // the blur grows with the distance from what is in focus, as with depth
-            let ramp = crate::timed("lens blur transition", || transition_ramp(&focus, transition_px(s, px_per_long), px_per_long, origin));
-            let coc: Vec<f32> = focus.data.iter().enumerate().map(|(i, f)| (1.0 - f) * ramp.as_ref().map_or(1.0, |r| r.at(i))).collect();
+            let coc: Vec<f32> = match depth_plane(img, s, frame, mattes) {
+                // with a depth map: the blur grows with the difference in depth from what is in focus
+                Some(d) => depth_coc(&focus, &d, s.lens_blur.transition),
+                // without: with the distance from what is in focus, standing in for depth
+                None => {
+                    let ramp = crate::timed("lens blur transition", || transition_ramp(&focus, transition_px(s, px_per_long), px_per_long, origin));
+                    focus.data.iter().enumerate().map(|(i, f)| (1.0 - f) * ramp.as_ref().map_or(1.0, |r| r.at(i))).collect()
+                }
+            };
             blur(img, &coc, r, boost_of(s.lens_blur.boost), origin);
         }
     }
@@ -643,6 +681,29 @@ fn disc(cells: &[[f32; 4]], lw: usize, lh: usize, rho: f32) -> Rgb32f {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn with_depth_what_is_as_near_as_the_focus_stays_sharp_and_the_far_blurs() {
+        // three columns: in focus (near), outside the focus but as near, and far away
+        let focus = Plane { width: 3, height: 1, data: vec![1.0, 0.0, 0.0] };
+        let depth = Plane { width: 3, height: 1, data: vec![0.8, 0.8, 0.1] };
+        let coc = super::depth_coc(&focus, &depth, 0.0);
+        assert!(coc[0] == 0.0 && coc[1] < 0.05, "in focus and as near: sharp {coc:?}");
+        assert!(coc[2] > 0.9, "far: full blur {coc:?}");
+        // a longer Transition blurs the same difference less
+        let soft = super::depth_coc(
+            &Plane { width: 3, height: 1, data: vec![1.0, 0.0, 0.0] },
+            &Plane { width: 3, height: 1, data: vec![0.8, 0.8, 0.5] },
+            100.0,
+        );
+        let hard = super::depth_coc(
+            &Plane { width: 3, height: 1, data: vec![1.0, 0.0, 0.0] },
+            &Plane { width: 3, height: 1, data: vec![0.8, 0.8, 0.5] },
+            0.0,
+        );
+        assert!(soft[2] < hard[2]);
+    }
+
     use super::*;
     use lightcraft_develop::{MaskComponent, MaskOp};
     use lightcraft_geom::Point;

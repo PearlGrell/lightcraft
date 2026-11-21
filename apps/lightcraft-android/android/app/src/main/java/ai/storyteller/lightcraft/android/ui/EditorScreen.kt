@@ -416,6 +416,7 @@ private fun LensBlurPanel(vm: LightCraftViewModel, all: List<Control>) {
     val state by vm.optics.collectAsStateWithLifecycle()
     ScrollList {
         Toggle("Apply", state.blur, Modifier.fillMaxWidth()) { vm.setLensBlur(it) }
+        Toggle("Use depth (AI)", state.blurDepth, Modifier.fillMaxWidth().graphicsLayer { alpha = if (state.blur) 1f else 0.4f }) { if (state.blur) vm.setBlurDepth(it) }
         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("In focus", fontSize = 14.sp, color = Lc.label, modifier = Modifier.weight(1f))
             Tools.blurShapes.forEach { (id, label) ->

@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use lightcraft_ai::select::{Selector, Tap};
-use lightcraft_ai::{Rgb8, Status, Store, detect, inpaint, models};
+use lightcraft_ai::{Rgb8, Status, Store, depth, detect, inpaint, models};
 use lightcraft_catalog::PhotoId;
 use lightcraft_develop::{SegMask, Spot, SpotMode, SpotPatch};
 use lightcraft_geom::Point;
@@ -21,6 +21,10 @@ use crate::{Result, Session};
 
 /// The selection model's input edge, as it stretches every photo to.
 const SELECT_EDGE: usize = 1024;
+/// The depth grid's side (stored with the settings, sampled at any output size).
+const DEPTH_SIDE: usize = 256;
+/// The depth model works at a 518 px long side; this render is enough for it.
+const DEPTH_EDGE: usize = 1024;
 /// Detection works on a 640 × 640 stretch; this render is enough for it.
 const DETECT_EDGE: usize = 1024;
 
@@ -263,6 +267,36 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(
                     json!({"objects": found.iter().take(50).map(|d| json!({"label": d.label, "score": d.score, "box": [d.x0, d.y0, d.x1, d.y1]})).collect::<Vec<_>>()}),
                 )
+            }
+        ),
+        cmd!(
+            "lensBlur.depth",
+            "Lens Blur Depth",
+            [],
+            None,
+            "{clear?: bool} — estimate how near each part of the active photo is (Depth Anything V2 Small) and store it with Lens Blur, so the blur grows with depth as through a real lens; clear removes it → {stored}",
+            has_active,
+            |s, p| {
+                let c = "lensBlur.depth";
+                let photo = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                if p.get("clear").and_then(Value::as_bool) == Some(true) {
+                    s.execute("develop.merge", &json!({"settings": {"lens_blur": {"depth": null}}, "label": "Lens Blur Depth"}))?;
+                    return Ok(json!({"stored": false}));
+                }
+                let store = s.ai_store(c)?;
+                let (_, img) = s.ai_picture(photo, DEPTH_EDGE, false).map_err(|e| bad(c, e))?;
+                let grid = depth::estimate(&store, &img, DEPTH_SIDE, None).map_err(|e| ai_err(c, e))?;
+                // stored as logits: the grid sampler's sigmoid gives the depth back
+                let logits: Vec<f32> = grid
+                    .iter()
+                    .map(|d| {
+                        let d = d.clamp(0.02, 0.98);
+                        (d / (1.0 - d)).ln()
+                    })
+                    .collect();
+                let seg = serde_json::to_value(SegMask::from_logits(DEPTH_SIDE, &logits)).map_err(|e| bad(c, e.to_string()))?;
+                s.execute("develop.merge", &json!({"settings": {"lens_blur": {"depth": seg}}, "label": "Lens Blur Depth"}))?;
+                Ok(json!({"stored": true}))
             }
         ),
         cmd!(

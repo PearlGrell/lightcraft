@@ -828,6 +828,14 @@ mod tests {
         let d = parse(&m.execute("develop.get", ""))["result"].clone();
         assert!(d["spots"][0]["patch"]["data"].as_str().is_some_and(|s| !s.is_empty()), "the spot keeps its generated pixels");
         assert_ne!(m.render(id, 200, 150, false, false).unwrap(), before, "the edits change the render");
+        assert_eq!(parse(&m.execute("develop.merge", r#"{"settings": {"lens_blur": {"enabled": true, "amount": 60.0}}}"#))["ok"], true);
+        let blurred = m.render(id, 200, 150, false, false).unwrap();
+        let r = parse(&m.execute("lensBlur.depth", ""));
+        assert_eq!(r["ok"], true, "{r}");
+        let d = parse(&m.execute("develop.get", ""))["result"].clone();
+        assert!(d["lens_blur"]["depth"]["side"].as_u64().is_some(), "the depth is stored with Lens Blur");
+        assert_ne!(m.render(id, 200, 150, false, false).unwrap(), blurred, "depth changes the blur");
+        assert_eq!(parse(&m.execute("lensBlur.depth", r#"{"clear": true}"#))["ok"], true);
         let _ = std::fs::remove_dir_all(&empty);
     }
 

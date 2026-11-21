@@ -1378,6 +1378,12 @@ pub struct LensBlur {
     /// the shape's preset, in the middle of the crop.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub area: Option<FocusArea>,
+    /// How near each part of the photo is (0 far .. 1 near, as a logit grid: its sigmoid is the
+    /// depth), over the photo as shot, from the depth model (`lensBlur.depth`). With it, the blur
+    /// grows with the difference in depth from what is in focus, as through a real lens; without
+    /// it, with the distance from the focus. Omitted while `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub depth: Option<crate::SegMask>,
 }
 
 /// A fixed focus shape on the photo: an upright ellipse.
@@ -1480,6 +1486,7 @@ impl Default for LensBlur {
             focal_range: 0.0,
             boost: 0.0,
             focus_mask: None,
+            depth: None,
             focus_strokes: Vec::new(),
             blur_strokes: Vec::new(),
             transition: Self::DEFAULT_TRANSITION,

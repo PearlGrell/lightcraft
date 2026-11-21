@@ -233,6 +233,8 @@ data class OpticsState(
     val removeCa: Boolean = false,
     val blur: Boolean = false,
     val blurShape: String = "auto",
+    /** Lens Blur uses a depth map from the depth model. */
+    val blurDepth: Boolean = false,
 )
 
 /** The photo's History (`history.list`): step labels oldest first, the step it is at, and its saved versions. */

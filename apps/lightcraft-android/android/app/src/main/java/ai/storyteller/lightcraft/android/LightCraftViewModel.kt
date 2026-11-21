@@ -1169,6 +1169,12 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         merge(JSONObject().put("lens_blur", patch), "Lens Blur")
     }
 
+    /** Lens Blur from depth (the depth model estimates it once and it is stored) or without. */
+    fun setBlurDepth(on: Boolean) {
+        _optics.value = _optics.value.copy(blurDepth = on)
+        aiCommand("lensBlur.depth", if (on) JSONObject() else JSONObject().put("clear", true))
+    }
+
     /** What Lens Blur keeps in focus without a mask: `auto` (the subject), `round`, `wide` or `tall`. */
     fun setBlurShape(shape: String) {
         _optics.value = _optics.value.copy(blurShape = shape)
@@ -1228,6 +1234,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             removeCa = o?.optBoolean("remove_ca") ?: false,
             blur = b?.optBoolean("enabled") ?: false,
             blurShape = b?.optString("shape", "auto")?.ifEmpty { "auto" } ?: "auto",
+            blurDepth = b?.optJSONObject("depth") != null,
         )
         _editing.value?.let { p -> maskAspect = runCatching { e.maskAspect(p) }.getOrDefault(1.0) }
         val masks = d.optJSONArray("masks")

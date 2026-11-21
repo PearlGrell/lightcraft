@@ -5,12 +5,14 @@
 //! - [`select`]: tap to select an object (EfficientSAM-Ti) → a segmentation grid over the photo.
 //! - [`inpaint`]: fill a hole with generated content (MI-GAN) → the filled pixels.
 //! - [`detect`]: find people and everyday objects (D-FINE-N) → labelled boxes.
+//! - [`depth`]: how near each part of the photo is (Depth Anything V2 Small) → a depth grid.
 //!
 //! No model is part of LightCraft: each downloads only when the user asks, and every feature that
 //! uses one says so when it is missing. Everything runs on the CPU through `lightcraft-nn`.
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod depth;
 pub mod detect;
 pub mod image;
 pub mod inpaint;
