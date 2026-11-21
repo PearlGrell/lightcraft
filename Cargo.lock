@@ -4387,9 +4387,21 @@ dependencies = [
  "lightcraft-bgremove",
  "lightcraft-codecs",
  "lightcraft-engine",
+ "lightcraft-geom",
  "lightcraft-raster",
  "log",
  "serde_json",
+]
+
+[[package]]
+name = "lightcraft-nn"
+version = "0.21.1"
+dependencies = [
+ "candle-core",
+ "half",
+ "lightcraft-testkit",
+ "rayon",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

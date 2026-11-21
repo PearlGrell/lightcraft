@@ -56,6 +56,19 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
     fun renderMasked(photo: Long, maxW: Int, maxH: Int, mask: Long, draft: Boolean = false): Bitmap =
         bitmap(nativeRenderMasked(live(), photo, maxW, maxH, mask, draft))
 
+    /**
+     * Points on the shown photo (`u, v` pairs, 0..1 across the edited, cropped picture) as mask
+     * [mask]'s coordinates (a negative [mask]: as a new mask), through crop, rotation and lens
+     * corrections.
+     */
+    fun viewToMask(photo: Long, mask: Long, points: FloatArray): FloatArray = nativeViewToMask(live(), photo, mask, points)
+
+    /** Mask coordinates → the shown photo (0..1); NaN for a point that has no place in it. */
+    fun maskToView(photo: Long, mask: Long, points: FloatArray): FloatArray = nativeMaskToView(live(), photo, mask, points)
+
+    /** Width ÷ height of the space radial masks measure radii in (long-edge units). */
+    fun maskAspect(photo: Long): Double = nativeMaskAspect(live(), photo)
+
     /** A grid thumbnail whose long edge is at least [longEdge]. */
     fun thumbnail(photo: Long, longEdge: Int): Bitmap = bitmap(nativeThumbnail(live(), photo, longEdge))
 
@@ -65,6 +78,12 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
     /** A mask on the active photo from on-device segmentation: [side]×[side] probabilities over the uncropped photo. */
     fun addSegMask(name: String, side: Int, probs: FloatArray, invert: Boolean) {
         val answer = JSONObject(nativeAddSegMask(live(), name, side, probs, invert))
+        if (!answer.optBoolean("ok")) throw EngineException(answer.optString("kind", "Other"), answer.optString("error", "mask failed"))
+    }
+
+    /** On-device segmentation added to ([op] `add`) or taken from (`subtract`) mask [mask]. */
+    fun addSegComponent(mask: Int, op: String, side: Int, probs: FloatArray, invert: Boolean) {
+        val answer = JSONObject(nativeAddSegComponent(live(), mask.toLong(), op, side, probs, invert))
         if (!answer.optBoolean("ok")) throw EngineException(answer.optString("kind", "Other"), answer.optString("error", "mask failed"))
     }
 
@@ -123,6 +142,10 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeCutoutMatte(handle: Long, side: Int, probs: FloatArray, invert: Boolean)
         @JvmStatic private external fun nativeCutoutErase(handle: Long, x: Float, y: Float, tolerance: Float, contiguous: Boolean, sample: Int, antiAlias: Boolean, feather: Float, opacity: Float): Int
         @JvmStatic private external fun nativeRenderMasked(handle: Long, photo: Long, maxW: Int, maxH: Int, mask: Long, draft: Boolean): IntArray
+        @JvmStatic private external fun nativeViewToMask(handle: Long, photo: Long, mask: Long, points: FloatArray): FloatArray
+        @JvmStatic private external fun nativeMaskToView(handle: Long, photo: Long, mask: Long, points: FloatArray): FloatArray
+        @JvmStatic private external fun nativeMaskAspect(handle: Long, photo: Long): Double
+        @JvmStatic private external fun nativeAddSegComponent(handle: Long, mask: Long, op: String, side: Int, probs: FloatArray, invert: Boolean): String
         @JvmStatic private external fun nativeKelvinWb(handle: Long, photo: Long): Boolean
         @JvmStatic private external fun nativeCutoutUndo(handle: Long): Boolean
         @JvmStatic private external fun nativeCutoutReset(handle: Long)

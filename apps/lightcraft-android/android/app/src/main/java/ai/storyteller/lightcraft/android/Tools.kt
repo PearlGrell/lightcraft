@@ -154,10 +154,34 @@ data class Group(
 /** The six tabs of the editor's bottom bar. */
 enum class MainTab(val label: String) { Quick("Quick edit"), Presets("Presets"), Crop("Crop"), Edit("Edit"), Masking("Masking"), Remove("Remove") }
 
-enum class ToolKind { Sliders, Action, Curve, LensBlur }
+enum class ToolKind { Sliders, Action, Curve, LensBlur, Profile, Heal }
+
+/** What a tap on the photo does in the Edit tab (one picker at a time). */
+enum class TapMode { None, WhiteBalance, PointColor, Heal, RedEye }
+
+/** The develop state the switches and pickers show (`develop.get`). */
+data class DevelopState(
+    val wbMode: String = "asShot",
+    val hdr: Boolean = false,
+    val profile: String = "",
+    val upright: String = "off",
+    val bw: Boolean = false,
+    val spots: Int = 0,
+    val pointColors: Int = 0,
+    val redEyes: Int = 0,
+)
+
+/** A camera / look profile (`profiles.list`). */
+data class ProfileItem(val id: String, val name: String, val group: String)
+
+/** The lens-profile database (`lens.databaseStatus`): lenses it holds and the download's state. */
+data class LensDb(val lenses: Int = 0, val state: String = "idle", val error: String = "")
+
+/** Healing (`spot.add`): mode `heal`, `clone`, `fill` (content-aware remove); size as a fraction of the long edge. */
+data class HealSettings(val mode: String = "heal", val size: Float = 0.025f)
 
 /** How a group's controls are laid out: a list of sliders, the colour mixer, or the grading wheels. */
-enum class GroupStyle { Sliders, Mixer, Grading }
+enum class GroupStyle { Sliders, Mixer, Grading, PointColor }
 
 /** A labelled tool of the row above the bottom bar. */
 data class Tool(val id: String, val label: String, val kind: ToolKind = ToolKind.Sliders, val groups: List<Group> = emptyList())
@@ -193,6 +217,37 @@ data class OpticsState(
     val blurShape: String = "auto",
 )
 
+/** The photo's History (`history.list`): step labels oldest first, the step it is at, and its saved versions. */
+data class HistoryState(val steps: List<String> = emptyList(), val cursor: Int = -1, val versions: List<String> = emptyList())
+
+/**
+ * Export options (the engine's `ExportOptions` JSON): format, quality, long edge in pixels (0 =
+ * full size), colour space, metadata policy and whether to drop the location.
+ */
+data class ExportSettings(
+    val format: String = "jpeg",
+    val quality: Int = 90,
+    val longEdge: Int = 0,
+    val colorSpace: String = "srgb",
+    val metadata: String = "all",
+    val removeLocation: Boolean = false,
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("format", format)
+        .put("quality", quality)
+        .put("colorSpace", colorSpace)
+        .put("metadata", metadata)
+        .put("removeLocation", removeLocation)
+        .also { if (longEdge > 0) it.put("resize", JSONObject().put("mode", "longEdge").put("value", longEdge).put("dontEnlarge", true)) }
+
+    companion object {
+        val formats = listOf("jpeg" to "JPEG", "png" to "PNG", "webp" to "WebP", "avif" to "AVIF", "jxl" to "JPEG XL", "tiff" to "TIFF", "dng" to "DNG")
+        val sizes = listOf(0 to "Full size", 4096 to "4096 px", 2048 to "2048 px", 1080 to "1080 px")
+        val spaces = listOf("srgb" to "sRGB", "displayp3" to "Display P3", "adobergb" to "Adobe RGB")
+        val metadataModes = listOf("all" to "All", "allexceptcamera" to "No camera info", "copyright" to "Copyright only", "none" to "None")
+    }
+}
+
 /** A crop aspect ratio (width / height); 0 = the photo's own. */
 data class Aspect(val label: String, val ratio: Float)
 
@@ -205,6 +260,7 @@ object Tools {
      * appears in two tabs.
      */
     val edit = listOf(
+        Tool("profile", "Profile", ToolKind.Profile, groups = listOf(Group("Profile", listOf("profile.")))),
         Tool("light", "Light", groups = listOf(Group("Light", listOf("light.")))),
         Tool(
             "color", "Color",
@@ -212,6 +268,7 @@ object Tools {
                 Group("Color", listOf("wb.", "color.")),
                 Group("Mixer", listOf("mixer."), style = GroupStyle.Mixer),
                 Group("Grading", listOf("grading."), style = GroupStyle.Grading),
+                Group("Point Color", listOf("pointColor."), style = GroupStyle.PointColor),
                 Group("B&W", listOf("bw.")),
                 Group("Calibration", listOf("calibration.")),
             ),
@@ -221,6 +278,7 @@ object Tools {
         Tool("detail", "Detail", groups = listOf(Group("Sharpening", listOf("detail.sharpen")), Group("Noise", listOf("enhance.denoise", "detail.nr")))),
         Tool("optics", "Optics", groups = listOf(Group("Lens", listOf("optics.distortion", "optics.vignetting", "optics.profile")), Group("Chromatic", listOf("optics.ca", "optics.defringe")))),
         Tool("blur", "Lens Blur", ToolKind.LensBlur, groups = listOf(Group("Lens Blur", listOf("lensBlur.")))),
+        Tool("heal", "Heal", ToolKind.Heal),
         Tool("geometry", "Geometry", groups = listOf(Group("Upright", listOf("geometry.")))),
     )
 
@@ -240,6 +298,15 @@ object Tools {
         "effects.texture", "effects.clarity", "effects.dehaze", "vignette.amount",
     )
 
+    /** White balance presets (`develop.wb` modes). */
+    val wbModes = listOf("asShot" to "As Shot", "auto" to "Auto", "daylight" to "Daylight", "cloudy" to "Cloudy", "shade" to "Shade", "tungsten" to "Tungsten", "fluorescent" to "Fluorescent", "flash" to "Flash")
+
+    /** Upright (`geometry.upright` modes the phone offers; Guided needs lines drawn on the photo). */
+    val uprightModes = listOf("off" to "Off", "auto" to "Auto", "level" to "Level", "vertical" to "Vertical", "full" to "Full")
+
+    /** Healing modes (`spot.add`). */
+    val healModes = listOf("heal" to "Heal", "clone" to "Clone", "fill" to "Remove")
+
     /** Lens Blur's in-focus area when no mask sets it (`lens_blur.shape`). */
     val blurShapes = listOf("auto" to "Subject", "round" to "Round", "wide" to "Wide", "tall" to "Tall")
 
@@ -247,8 +314,11 @@ object Tools {
         Tool("subject", "Subject", ToolKind.Action),
         Tool("background", "Background", ToolKind.Action),
         Tool("sky", "Sky", ToolKind.Action),
+        Tool("brush", "Brush", ToolKind.Action),
         Tool("linear", "Linear", ToolKind.Action),
         Tool("radial", "Radial", ToolKind.Action),
+        Tool("color", "Color", ToolKind.Action),
+        Tool("luminance", "Luminance", ToolKind.Action),
     )
 
     val remove = listOf(

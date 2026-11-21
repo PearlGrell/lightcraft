@@ -25,16 +25,43 @@ data class Preset(val id: String, val name: String, val group: String)
 /** A point of a tone curve, both coordinates 0..1. */
 data class CurvePoint(val x: Float, val y: Float)
 
-/** A mask of the photo (`develop.get` → `masks`) with its local adjustments. */
-data class MaskInfo(val id: Int, val name: String, val adjust: Map<String, Float>) {
+/**
+ * A mask of the photo (`develop.get` → `masks`): its local adjustments, and its first component's
+ * shape ([kind] `radial`, `linear`, `brush`, `colorRange`, `luminanceRange`, `seg`…), which the
+ * on-photo handles edit.
+ */
+data class MaskInfo(
+    val id: Int,
+    val name: String,
+    val adjust: Map<String, Float>,
+    val kind: String = "",
+    val shape: JSONObject? = null,
+    val visible: Boolean = true,
+    val refine: Float = 0f,
+    val components: Int = 1,
+) {
     companion object {
         fun fromJson(o: JSONObject): MaskInfo {
             val a = o.optJSONObject("adjust")
             val adjust = a?.keys()?.asSequence()?.associateWith { a.optDouble(it, 0.0).toFloat() } ?: emptyMap()
-            return MaskInfo(o.optInt("id"), o.optString("name", "Mask"), adjust)
+            val comps = o.optJSONArray("components")
+            val shape = comps?.optJSONObject(0)?.optJSONObject("shape")
+            return MaskInfo(
+                id = o.optInt("id"),
+                name = o.optString("name", "Mask"),
+                adjust = adjust,
+                kind = shape?.optString("kind", "") ?: "",
+                shape = shape,
+                visible = o.optBoolean("visible", true),
+                refine = o.optDouble("refine", 0.0).toFloat(),
+                components = comps?.length() ?: 0,
+            )
         }
     }
 }
+
+/** The mask brush (`mask.brushStroke`): size as a fraction of the long edge, feather and flow 0..100. */
+data class BrushSettings(val size: Float = 0.04f, val feather: Float = 50f, val flow: Float = 100f, val erase: Boolean = false)
 
 /** What the screens show; every change goes through engine commands. */
 class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
@@ -99,6 +126,110 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     /** A slider value as the engine takes it (relative Temp → Kelvin). */
     private fun toEngine(id: String, v: Float): Float = if (relativeWb) RelativeWb.toEngine(id, v) else v
+
+    private val _develop = MutableStateFlow(DevelopState())
+    /** White balance mode, HDR, profile, Upright, B&W and the counts of spots, Point Color samples and red-eye fixes. */
+    val develop: StateFlow<DevelopState> = _develop.asStateFlow()
+
+    private val _tapMode = MutableStateFlow(TapMode.None)
+    /** What a tap on the photo does (white balance, Point Color, healing or red eye). */
+    val tapMode: StateFlow<TapMode> = _tapMode.asStateFlow()
+
+    fun setTapMode(m: TapMode) {
+        _tapMode.value = if (_tapMode.value == m) TapMode.None else m
+    }
+
+    private val _heal = MutableStateFlow(HealSettings())
+    val heal: StateFlow<HealSettings> = _heal.asStateFlow()
+    fun setHeal(h: HealSettings) {
+        _heal.value = h
+    }
+
+    private val _profiles = MutableStateFlow<List<ProfileItem>>(emptyList())
+    val profiles: StateFlow<List<ProfileItem>> = _profiles.asStateFlow()
+
+    private val _lensDb = MutableStateFlow(LensDb())
+    val lensDb: StateFlow<LensDb> = _lensDb.asStateFlow()
+
+    /** A tap on the shown photo (0..1) with a picker on: the engine command for it, in photo coordinates. */
+    fun tapPhoto(u: Float, v: Float) {
+        val mode = _tapMode.value
+        if (mode == TapMode.None) return
+        viewModelScope.launch(commands) {
+            val p = viewToMask(null, floatArrayOf(u, v))
+            if (p.size < 2) return@launch
+            val x = p[0].toDouble()
+            val y = p[1].toDouble()
+            withEngine { e ->
+                when (mode) {
+                    TapMode.WhiteBalance -> e.execute("develop.wbPick", JSONObject().put("x", x).put("y", y))
+                    TapMode.PointColor -> e.execute("pointColor.pick", JSONObject().put("x", x).put("y", y))
+                    TapMode.Heal -> {
+                        val h = _heal.value
+                        e.execute("spot.add", JSONObject().put("mode", h.mode).put("points", JSONArray().put(JSONArray().put(x).put(y))).put("size", h.size.toDouble()))
+                    }
+                    TapMode.RedEye -> e.execute("redeye.add", JSONObject().put("center", JSONArray().put(x).put(y)).put("rx", 0.02).put("ry", 0.02))
+                    TapMode.None -> {}
+                }
+            }
+            // the white balance picker is one tap; the others stay on for more
+            if (mode == TapMode.WhiteBalance) _tapMode.value = TapMode.None
+            afterEdit()
+        }
+    }
+
+    fun setWbMode(mode: String) = runEdit("develop.wb", JSONObject().put("mode", mode))
+    fun setHdr(on: Boolean) = runEdit("develop.hdr", JSONObject().put("enabled", on))
+    fun setUpright(mode: String) = runEdit("geometry.upright", JSONObject().put("mode", mode))
+    fun autoBwMix() = runEdit("develop.autoBwMix")
+    fun applyProfile(id: String) = runEdit("develop.profile", JSONObject().put("id", id))
+    fun deletePointColor(index: Int) = runEdit("pointColor.delete", JSONObject().put("index", index))
+    fun deleteSpot() = runEdit("spot.delete")
+    fun deleteRedEye(index: Int) = runEdit("redeye.delete", JSONObject().put("index", index))
+
+    /** Find sensor-dust spots and heal each (one undo step). */
+    fun findDust() = runEdit("spot.findDust", JSONObject().put("sensitivity", 50))
+
+    /** Level the horizon with the crop angle; says so when the photo has no clear lines. */
+    fun autoStraighten() {
+        viewModelScope.launch(commands) {
+            withEngine { e ->
+                val r = e.execute("crop.autoStraighten") as? JSONObject
+                if (r != null && r.has("changed") && !r.optBoolean("changed", true)) messages.trySend("Auto straighten: ${r.optString("reason", "nothing to level")}")
+            }
+            afterEdit()
+        }
+    }
+
+    fun loadProfiles() {
+        viewModelScope.launch(commands) {
+            val list = runCatching { engine?.execute("profiles.list") as? JSONArray }.getOrNull() ?: return@launch
+            _profiles.value = (0 until list.length()).mapNotNull { i ->
+                list.optJSONObject(i)?.let { ProfileItem(it.optString("id"), it.optString("name"), it.optString("group", "")) }
+            }.filter { it.id.isNotEmpty() }
+        }
+    }
+
+    /** Read the lens database's state; while a download runs, check again every second. */
+    fun refreshLensDb() {
+        viewModelScope.launch(commands) {
+            val r = runCatching { engine?.execute("lens.databaseStatus") as? JSONObject }.getOrNull() ?: return@launch
+            val d = r.optJSONObject("download")
+            _lensDb.value = LensDb(r.optInt("lenses", 0), d?.optString("state", "idle") ?: "idle", d?.optString("error", "") ?: "")
+            if (_lensDb.value.state == "running") {
+                kotlinx.coroutines.delay(1000)
+                refreshLensDb()
+            }
+        }
+    }
+
+    /** Download the lens-profile database (lensfun, CC BY-SA 3.0) beside the library. */
+    fun downloadLensDb() {
+        viewModelScope.launch(commands) {
+            withEngine { e -> e.execute("lens.downloadDatabase") }
+            refreshLensDb()
+        }
+    }
 
     private val _optics = MutableStateFlow(OpticsState())
     /** The Optics and Lens Blur switches (`develop.get`). */
@@ -260,6 +391,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     fun selectTab(tab: MainTab) {
         if (_tab.value == tab) return
         if (_tab.value == MainTab.Remove) endCutout()
+        _tapMode.value = TapMode.None
         _tab.value = tab
         _tool.value = when (tab) {
             MainTab.Edit -> Tools.edit[0]
@@ -285,7 +417,15 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             MainTab.Quick -> quickAction(tool.id)
             MainTab.Masking -> addMask(tool.id)
             MainTab.Remove -> removeAction(tool)
-            else -> _tool.value = if (_tool.value?.id == tool.id) null else tool
+            else -> {
+                _tapMode.value = TapMode.None
+                _tool.value = if (_tool.value?.id == tool.id) null else tool
+                when (tool.kind) {
+                    ToolKind.Profile -> loadProfiles()
+                    ToolKind.Heal -> _tapMode.value = TapMode.Heal
+                    else -> if (tool.id == "optics") refreshLensDb()
+                }
+            }
         }
     }
 
@@ -452,9 +592,37 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 "subject" -> subjectMask("Subject", invert = false)
                 "background" -> subjectMask("Background", invert = true)
                 "sky" -> withEngine { e -> e.execute("mask.add", JSONObject().put("kind", "sky").put("name", "Sky")) }
-                else -> withEngine { e -> e.execute("mask.add", JSONObject().put("kind", kind).put("name", kind.replaceFirstChar { it.uppercase() })) }
+                else -> withEngine { e -> e.execute("mask.add", JSONObject().put("kind", engineKind(kind)).put("name", maskName(kind))) }
             }
             afterEdit()
+        }
+    }
+
+    private fun engineKind(kind: String) = when (kind) {
+        "color" -> "colorRange"
+        "luminance" -> "luminanceRange"
+        else -> kind
+    }
+
+    private fun maskName(kind: String) = when (kind) {
+        "color" -> "Color Range"
+        "luminance" -> "Luminance Range"
+        else -> kind.replaceFirstChar { it.uppercase() }
+    }
+
+    /** The phone's subject segmentation added to (or taken from) mask [mask] as a part. */
+    private fun subjectComponent(mask: Int, op: String, invert: Boolean) {
+        val photo = _editing.value ?: return
+        val e = engine ?: return
+        _busy.value = true
+        try {
+            val probs = Segmenter.subject(e.render(photo, 1024, 1024, before = true))
+            e.addSegComponent(mask, op, Segmenter.SIDE, probs, invert)
+        } catch (t: Throwable) {
+            Log.w(tag, "segmentation", t)
+            messages.trySend("Subject selection is unavailable: ${t.message ?: "the on-device model is still downloading"}")
+        } finally {
+            _busy.value = false
         }
     }
 
@@ -492,6 +660,125 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 e.execute("mask.adjust", JSONObject().put("id", id).put("values", JSONObject().put(key, value.toDouble())))
             }
             requestRender(draft = true)
+        }
+    }
+
+    private val _brush = MutableStateFlow(BrushSettings())
+    /** The mask brush's settings. */
+    val brush: StateFlow<BrushSettings> = _brush.asStateFlow()
+
+    fun setBrush(b: BrushSettings) {
+        _brush.value = b
+    }
+
+    /** Width ÷ height of the open photo's mask space (for radial handles); read when masks load. */
+    @Volatile var maskAspect: Double = 1.0
+        private set
+
+    /** View points (0..1 on the shown photo) → mask [mask]'s coordinates; empty when the engine can't. */
+    fun viewToMask(mask: Int?, uv: FloatArray): FloatArray {
+        val photo = _editing.value ?: return FloatArray(0)
+        val e = engine ?: return FloatArray(0)
+        return runCatching { e.viewToMask(photo, mask?.toLong() ?: -1L, uv) }.getOrElse { FloatArray(0) }
+    }
+
+    /** Mask coordinates → the shown photo (0..1); NaN where a point has no place. */
+    fun maskToView(mask: Int?, pts: FloatArray): FloatArray {
+        val photo = _editing.value ?: return FloatArray(0)
+        val e = engine ?: return FloatArray(0)
+        return runCatching { e.maskToView(photo, mask?.toLong() ?: -1L, pts) }.getOrElse { FloatArray(0) }
+    }
+
+    /** One brush stroke on the active brush mask, from points on the shown photo (0..1). */
+    fun paint(uv: FloatArray) {
+        val id = _activeMask.value ?: return
+        if (uv.size < 2) return
+        val b = _brush.value
+        viewModelScope.launch(commands) {
+            val pts = viewToMask(id, uv)
+            if (pts.size < 2) return@launch
+            val points = JSONArray()
+            for (i in 0 until pts.size / 2) points.put(JSONArray().put(pts[2 * i].toDouble()).put(pts[2 * i + 1].toDouble()))
+            withEngine { e ->
+                e.execute(
+                    "mask.brushStroke",
+                    JSONObject().put("id", id).put("points", points).put("size", b.size.toDouble())
+                        .put("feather", b.feather.toDouble()).put("flow", b.flow.toDouble()).put("erase", b.erase),
+                )
+            }
+            afterEdit()
+        }
+    }
+
+    /** A tap on the photo with a Color Range mask: sample the colour there ([add]: one more sample). */
+    fun sampleColor(u: Float, v: Float, add: Boolean) {
+        val id = _activeMask.value ?: return
+        viewModelScope.launch(commands) {
+            val p = viewToMask(id, floatArrayOf(u, v))
+            if (p.size < 2) return@launch
+            withEngine { e -> e.execute("mask.sampleColor", JSONObject().put("id", id).put("x", p[0].toDouble()).put("y", p[1].toDouble()).put("add", add)) }
+            afterEdit()
+        }
+    }
+
+    /**
+     * A gradient handle moved: the active mask's first component takes [shape] (live while
+     * dragging, one undo step per drag; [done] ends the drag).
+     */
+    fun moveShape(shape: JSONObject, done: Boolean) {
+        val id = _activeMask.value ?: return
+        _masks.value = _masks.value.map { if (it.id == id) it.copy(shape = shape) else it }
+        viewModelScope.launch(commands) {
+            withEngine { e ->
+                begin(e, "Move Mask")
+                e.execute("mask.update", JSONObject().put("id", id).put("component", 0).put("shape", JSONObject(shape.toString())))
+            }
+            requestRender(draft = !done)
+        }
+        if (done) finishInteraction()
+    }
+
+    /** Refine Edge (0..100): the mask's edges snap to the photo's. */
+    fun setRefine(value: Float) {
+        val id = _activeMask.value ?: return
+        _masks.value = _masks.value.map { if (it.id == id) it.copy(refine = value) else it }
+        viewModelScope.launch(commands) {
+            withEngine { e ->
+                begin(e, "Refine Mask")
+                e.execute("mask.refine", JSONObject().put("id", id).put("value", value.toDouble()))
+            }
+            requestRender(draft = true)
+        }
+    }
+
+    fun renameMask(name: String) {
+        val id = _activeMask.value ?: return
+        if (name.isBlank()) return
+        runEdit("mask.rename", JSONObject().put("id", id).put("name", name.trim()))
+    }
+
+    fun duplicateMask(invert: Boolean) {
+        val id = _activeMask.value ?: return
+        runEdit("mask.duplicate", JSONObject().put("id", id).put("invert", invert))
+    }
+
+    fun toggleMaskVisible() {
+        val m = _masks.value.firstOrNull { it.id == _activeMask.value } ?: return
+        runEdit("mask.visible", JSONObject().put("id", m.id).put("visible", !m.visible))
+    }
+
+    /** Add to or subtract from the active mask ([op] `add`/`subtract`/`intersect`) a [kind] selection. */
+    fun addComponent(op: String, kind: String) {
+        val id = _activeMask.value ?: return
+        viewModelScope.launch(commands) {
+            when (kind) {
+                "subject", "background" -> {
+                    // an AI part: the phone's segmentation, as a seg component
+                    subjectComponent(id, op, invert = kind == "background")
+                }
+                else -> withEngine { e -> e.execute("mask.addComponent", JSONObject().put("id", id).put("op", op).put("kind", engineKind(kind))) }
+            }
+            afterEdit()
         }
     }
 
@@ -600,7 +887,15 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun share() {
+    private val _exportSettings = MutableStateFlow(ExportSettings())
+    /** The last export options (the Export dialog starts from them). */
+    val exportSettings: StateFlow<ExportSettings> = _exportSettings.asStateFlow()
+
+    fun share() = export(_exportSettings.value)
+
+    /** Export the open photo with [o] through the engine's one encoder and hand it to the share sheet. */
+    fun export(o: ExportSettings) {
+        _exportSettings.value = o
         val photo = _editing.value ?: return
         viewModelScope.launch(commands) {
             _busy.value = true
@@ -608,13 +903,69 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 withEngine { e ->
                     val dir = File(getApplication<Application>().cacheDir, "exports").apply { mkdirs() }
                     dir.listFiles()?.forEach { it.delete() }
-                    val path = e.export(photo, JSONObject().put("format", "jpeg").put("quality", 90), dir.absolutePath)
+                    val path = e.export(photo, o.toJson(), dir.absolutePath)
                     shares.trySend(File(path))
                 }
             } finally {
                 _busy.value = false
             }
         }
+    }
+
+    private val _history = MutableStateFlow(HistoryState())
+    val history: StateFlow<HistoryState> = _history.asStateFlow()
+
+    /** Read the open photo's History and versions. */
+    fun loadHistory() {
+        viewModelScope.launch(commands) {
+            val r = runCatching { engine?.execute("history.list") as? JSONObject }.getOrNull() ?: return@launch
+            val h = r.optJSONArray("history")
+            val v = r.optJSONArray("versions")
+            _history.value = HistoryState(
+                steps = (0 until (h?.length() ?: 0)).map { h?.optString(it, "") ?: "" },
+                cursor = r.optInt("cursor", -1),
+                versions = (0 until (v?.length() ?: 0)).map { v?.optJSONObject(it)?.optString("name", "Version") ?: "Version" },
+            )
+        }
+    }
+
+    private fun thenHistory(id: String, params: JSONObject) {
+        viewModelScope.launch(commands) {
+            withEngine { e -> e.execute(id, params) }
+            afterEdit()
+        }
+        loadHistory()
+    }
+
+    fun restoreHistory(index: Int) = thenHistory("history.restore", JSONObject().put("index", index))
+    fun createVersion(name: String) = thenHistory("version.create", JSONObject().put("name", name.trim().ifEmpty { "Version" }))
+    fun restoreVersion(index: Int) = thenHistory("version.restore", JSONObject().put("index", index))
+    fun renameVersion(index: Int, name: String) = thenHistory("version.rename", JSONObject().put("index", index).put("name", name.trim()))
+    fun deleteVersion(index: Int) = thenHistory("version.delete", JSONObject().put("index", index))
+
+    /** Copy the open photo's settings (all but crop, masks and healing, as the desktop's default). */
+    fun copySettings() {
+        viewModelScope.launch(commands) {
+            withEngine { e -> e.execute("develop.copy") }
+            messages.trySend("Settings copied")
+        }
+    }
+
+    /** Paste the copied settings onto the open photo. */
+    fun pasteSettings() {
+        val photo = _editing.value ?: return
+        runEdit("develop.paste", JSONObject().put("ids", JSONArray().put(photo)))
+    }
+
+    /** Save the open photo's look as a preset in User Presets. */
+    fun savePreset(name: String) {
+        if (name.isBlank()) return
+        viewModelScope.launch(commands) {
+            withEngine { e -> e.execute("preset.create", JSONObject().put("name", name.trim()).put("group", "User Presets")) }
+            messages.trySend("Preset saved")
+            _presets.value = emptyList()
+        }
+        loadPresets()
     }
 
     /** Merge [patch] into the photo's develop settings as one undo step named [label] (`develop.merge`). */
@@ -683,6 +1034,16 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 list.ifEmpty { listOf(CurvePoint(0f, 0f), CurvePoint(1f, 1f)) }
             }
         }
+        _develop.value = DevelopState(
+            wbMode = d.optJSONObject("wb")?.optString("mode", "asShot") ?: "asShot",
+            hdr = d.optJSONObject("hdr")?.optBoolean("enabled") ?: false,
+            profile = d.optJSONObject("profile")?.optString("id", "") ?: "",
+            upright = d.optJSONObject("geometry")?.optString("upright", "off") ?: "off",
+            bw = d.optString("treatment", "color") == "bw",
+            spots = d.optJSONArray("spots")?.length() ?: 0,
+            pointColors = d.optJSONArray("point_colors")?.length() ?: 0,
+            redEyes = d.optJSONArray("red_eye")?.length() ?: 0,
+        )
         val o = d.optJSONObject("optics")
         val b = d.optJSONObject("lens_blur")
         _optics.value = OpticsState(
@@ -691,6 +1052,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             blur = b?.optBoolean("enabled") ?: false,
             blurShape = b?.optString("shape", "auto")?.ifEmpty { "auto" } ?: "auto",
         )
+        _editing.value?.let { p -> maskAspect = runCatching { e.maskAspect(p) }.getOrDefault(1.0) }
         val masks = d.optJSONArray("masks")
         _masks.value = (0 until (masks?.length() ?: 0)).mapNotNull { i -> masks?.optJSONObject(i)?.let { MaskInfo.fromJson(it) } }
         if (_masks.value.none { it.id == _activeMask.value }) _activeMask.value = _masks.value.lastOrNull()?.id

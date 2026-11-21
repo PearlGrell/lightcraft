@@ -20,6 +20,10 @@ use serde_json::{Value, json};
 
 pub use lightcraft_bgremove::EraseOptions;
 
+/// The size the view ↔ mask mapping works at (any size gives the same normalized answer; this
+/// one keeps the pixel arithmetic well inside `f64`'s exact range).
+const MAP_EDGE: usize = 4096;
+
 /// The mask overlay's colour (the desktop's default).
 const OVERLAY_RED: [u8; 3] = [230, 30, 40];
 
@@ -38,6 +42,9 @@ pub struct Frame {
 pub struct Mobile {
     session: Mutex<Session>,
     cutout: Mutex<Option<Cutout>>,
+    /// Where the lens-profile database lives: `lensfun/` beside the library (a phone has no
+    /// settings folder for the engine to find), set by [`Mobile::open_library`].
+    lens_dir: Mutex<Option<std::path::PathBuf>>,
 }
 
 /// The background-removal workspace: the edited photo rendered once, and its alpha matte with the
@@ -90,12 +97,12 @@ impl Mobile {
     pub fn new() -> Mobile {
         // `with_fs` installs the file decoders (JPEG, PNG, HEIC, raws…): without them every
         // imported photo fails to render with "no decoder available"
-        Mobile { session: Mutex::new(Session::new().with_fs()), cutout: Mutex::new(None) }
+        Mobile { session: Mutex::new(Session::new().with_fs()), cutout: Mutex::new(None), lens_dir: Mutex::new(None) }
     }
 
     /// A session with the procedural demo library (first run, screenshots, tests).
     pub fn demo() -> Mobile {
-        Mobile { session: Mutex::new(Session::with_demo().with_fs()), cutout: Mutex::new(None) }
+        Mobile { session: Mutex::new(Session::with_demo().with_fs()), cutout: Mutex::new(None), lens_dir: Mutex::new(None) }
     }
 
     fn lock(&self) -> MutexGuard<'_, Session> {
@@ -108,7 +115,15 @@ impl Mobile {
     pub fn open_library(&self, dir: &str, seed_demo: bool) -> Result<String, String> {
         let mut s = self.lock();
         let report = s.open_library(dir, seed_demo).map_err(|e| e.to_string())?;
-        Ok(format!("{report:?}"))
+        let report = format!("{report:?}");
+        // the lens-profile database beside the library: read it when it is there, download into it
+        let path = std::path::Path::new(dir);
+        let lens = path.parent().unwrap_or(path).join("lensfun");
+        if lightcraft_engine::lensfun_download::installed(&lens) {
+            lightcraft_engine::lens_profiles::use_dir(Some(lens.clone()));
+        }
+        *self.lens_dir.lock().unwrap_or_else(PoisonError::into_inner) = Some(lens);
+        Ok(report)
     }
 
     /// Run engine command `id` with `params` (a JSON object, or empty for none). Never fails: the
@@ -121,9 +136,30 @@ impl Mobile {
                 Err(e) => return failure("BadParams", &format!("parameters are not JSON: {e}")),
             },
         };
+        if id == "lens.downloadDatabase" {
+            return self.download_lens_database();
+        }
         match self.lock().execute(id, &params) {
             Ok(result) => json!({"ok": true, "result": result}).to_string(),
             Err(e) => engine_failure(&e),
+        }
+    }
+
+    /// `lens.downloadDatabase` on a phone: into the folder beside the library (the engine's own
+    /// answer needs a settings folder, which a phone doesn't have). Progress: `lens.databaseStatus`.
+    fn download_lens_database(&self) -> String {
+        let Some(dir) = self.lens_dir.lock().unwrap_or_else(PoisonError::into_inner).clone() else {
+            return failure("Unsupported", "open a library first: the lens database is kept beside it");
+        };
+        let mut s = self.lock();
+        match lightcraft_engine::cmd::lens_refresh::start_download(
+            &mut s,
+            &dir,
+            lightcraft_engine::lensfun_download::mirrors(),
+            lightcraft_engine::lensfun_download::FILES,
+        ) {
+            Ok(()) => json!({"ok": true, "result": {"started": true, "dir": dir.to_string_lossy()}}).to_string(),
+            Err(e) => failure("Other", &e),
         }
     }
 
@@ -154,6 +190,83 @@ impl Mobile {
             job.ok_or_else(|| format!("no photo {photo}"))?
         };
         run(if draft { job.draft() } else { job })
+    }
+
+    /// The geometry frame `photo` renders through (crop applied) and how mask `mask` reads its
+    /// coordinates (`None`: as a new mask does, on the photo).
+    fn mask_frame(&self, photo: u64, mask: Option<u32>) -> Result<(lightcraft_engine::pipeline::geometry::Frame, bool), String> {
+        let s = self.lock();
+        let p = s.catalog.photo(PhotoId(photo)).ok_or_else(|| format!("no photo {photo}"))?;
+        let d = &p.develop;
+        let frame = lightcraft_engine::pipeline::geometry::Frame::with_lens(
+            p.width.max(1) as usize,
+            p.height.max(1) as usize,
+            d,
+            true,
+            p.embedded_lens.as_ref(),
+        );
+        let on_photo = match mask {
+            Some(id) => d.masks.iter().find(|m| m.id == id).map(|m| m.on_photo).ok_or_else(|| format!("no mask {id}"))?,
+            None => true,
+        };
+        Ok((frame, on_photo))
+    }
+
+    /// Points on the rendered photo (`[u, v]`, 0..1 across the edited and cropped picture the
+    /// editor shows) as mask `mask`'s coordinates, where a gradient, brush stroke or colour sample
+    /// is stored: through the crop, rotation, lens corrections and Upright. `None` maps as a new
+    /// mask. Non-finite input is an error.
+    pub fn view_to_mask(&self, photo: u64, mask: Option<u32>, points: &[[f64; 2]]) -> Result<Vec<[f64; 2]>, String> {
+        let (frame, on_photo) = self.mask_frame(photo, mask)?;
+        let frame = frame.for_mask(on_photo);
+        let (w, h) = frame.fit(MAP_EDGE, MAP_EDGE);
+        let map = frame.out_to_mask(w.max(1), h.max(1));
+        points
+            .iter()
+            .map(|[u, v]| {
+                if !(u.is_finite() && v.is_finite()) {
+                    return Err("a point is not a number".to_string());
+                }
+                let m = map.apply(lightcraft_geom::Point::new(u * w as f64, v * h as f64));
+                Ok([m.x, m.y])
+            })
+            .collect()
+    }
+
+    /// The inverse of [`Mobile::view_to_mask`]: where mask coordinates land on the rendered photo
+    /// (0..1), for drawing a gradient's handles. `None` for a point the lens warp can't place.
+    pub fn mask_to_view(&self, photo: u64, mask: Option<u32>, points: &[[f64; 2]]) -> Result<Vec<Option<[f64; 2]>>, String> {
+        let (frame, on_photo) = self.mask_frame(photo, mask)?;
+        let frame = frame.for_mask(on_photo);
+        let (w, h) = frame.fit(MAP_EDGE, MAP_EDGE);
+        let (w, h) = (w.max(1) as f64, h.max(1) as f64);
+        let to_out = frame.mask_to_out(w as usize, h as usize);
+        Ok(points
+            .iter()
+            .map(|[x, y]| {
+                if !(x.is_finite() && y.is_finite()) {
+                    return None;
+                }
+                to_out(lightcraft_geom::Point::new(*x, *y)).map(|o| [o.x / w, o.y / h])
+            })
+            .collect())
+    }
+
+    /// Width ÷ height of the space radial masks measure their radii in (the whole transformed
+    /// photo, before the crop): radii are in long-edge units, so a handle at `rx` along x sits
+    /// `rx · long / width` away in normalized x. As the desktop's `frame_long_norm`.
+    pub fn mask_aspect(&self, photo: u64) -> Result<f64, String> {
+        let s = self.lock();
+        let p = s.catalog.photo(PhotoId(photo)).ok_or_else(|| format!("no photo {photo}"))?;
+        let frame = lightcraft_engine::pipeline::geometry::Frame::with_lens(
+            p.width.max(1) as usize,
+            p.height.max(1) as usize,
+            &p.develop,
+            false,
+            p.embedded_lens.as_ref(),
+        );
+        let a = frame.aspect();
+        Ok(if a.is_finite() && a > 0.0 { a } else { 1.0 })
     }
 
     /// Whether `photo`'s Temp slider is a real Kelvin scale: a raw file whose camera gives it one.
@@ -212,25 +325,29 @@ impl Mobile {
     /// segmentation): `probs` are `side × side` foreground probabilities over the uncropped photo.
     /// `invert` keeps the rest instead (Background). Returns the engine's answer, as [`Mobile::execute`].
     pub fn add_seg_mask(&self, name: &str, side: u32, probs: &[f32], invert: bool) -> String {
-        let side = side as usize;
-        if side == 0 || side > 1024 || side.checked_mul(side) != Some(probs.len()) {
-            return failure("BadParams", &format!("a {side}×{side} mask needs {} values, got {}", side.saturating_mul(side), probs.len()));
-        }
-        let logits: Vec<f32> = probs
-            .iter()
-            .map(|p| {
-                let p = if p.is_finite() { p.clamp(1e-4, 1.0 - 1e-4) } else { 1e-4 };
-                let l = (p / (1.0 - p)).ln();
-                if invert { -l } else { l }
-            })
-            .collect();
-        let seg = lightcraft_engine::develop::SegMask::from_logits(side, &logits);
-        let seg = match serde_json::to_value(seg) {
+        let seg = match seg_json(side, probs, invert) {
             Ok(v) => v,
-            Err(e) => return failure("Other", &e.to_string()),
+            Err(e) => return e,
         };
         let params = json!({"kind": "prompt", "text": name, "name": name, "seg": seg});
         match self.lock().execute("mask.add", &params) {
+            Ok(result) => json!({"ok": true, "result": result}).to_string(),
+            Err(e) => engine_failure(&e),
+        }
+    }
+
+    /// The phone's segmentation as a part of mask `mask`: `op` `add`, `subtract` or `intersect`
+    /// (Masking's Add / Subtract). Answers as [`Mobile::execute`].
+    pub fn add_seg_component(&self, mask: u32, op: &str, name: &str, side: u32, probs: &[f32], invert: bool) -> String {
+        if !matches!(op, "add" | "subtract" | "intersect") {
+            return failure("BadParams", &format!("unknown op {op:?}"));
+        }
+        let seg = match seg_json(side, probs, invert) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        let params = json!({"id": mask, "op": op, "kind": "prompt", "text": name, "seg": seg});
+        match self.lock().execute("mask.addComponent", &params) {
             Ok(result) => json!({"ok": true, "result": result}).to_string(),
             Err(e) => engine_failure(&e),
         }
@@ -344,6 +461,25 @@ impl Mobile {
     pub fn cutout_end(&self) {
         *self.cutout() = None;
     }
+}
+
+/// `side × side` foreground probabilities (an on-device segmenter's output) as the engine's stored
+/// segmentation; `invert` keeps the rest instead. Errors are [`Mobile::execute`]-style answers.
+fn seg_json(side: u32, probs: &[f32], invert: bool) -> Result<Value, String> {
+    let side = side as usize;
+    if side == 0 || side > 1024 || side.checked_mul(side) != Some(probs.len()) {
+        return Err(failure("BadParams", &format!("a {side}×{side} mask needs {} values, got {}", side.saturating_mul(side), probs.len())));
+    }
+    let logits: Vec<f32> = probs
+        .iter()
+        .map(|p| {
+            let p = if p.is_finite() { p.clamp(1e-4, 1.0 - 1e-4) } else { 1e-4 };
+            let l = (p / (1.0 - p)).ln();
+            if invert { -l } else { l }
+        })
+        .collect();
+    let seg = lightcraft_engine::develop::SegMask::from_logits(side, &logits);
+    serde_json::to_value(seg).map_err(|e| failure("Other", &e.to_string()))
 }
 
 fn clamp_edge(edge: u32) -> Result<usize, String> {
@@ -463,6 +599,169 @@ mod tests {
         // the overlay never becomes the photo's preview
         assert_eq!(m.render(id, 160, 120, false, false).unwrap(), plain);
         assert!(m.render_masked(id, 160, 120, u32::MAX, false).is_err());
+    }
+
+    #[test]
+    fn view_and_mask_coordinates_round_trip_through_crop_and_rotation() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        // straight: the view is the photo
+        let p = m.view_to_mask(id, None, &[[0.5, 0.5], [0.25, 0.75]]).unwrap();
+        assert!((p[0][0] - 0.5).abs() < 1e-6 && (p[0][1] - 0.5).abs() < 1e-6, "{p:?}");
+        assert!((p[1][0] - 0.25).abs() < 1e-6 && (p[1][1] - 0.75).abs() < 1e-6, "{p:?}");
+        // a straightened crop: the view's centre is still the crop's centre, and the corners move
+        assert_eq!(parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()))["ok"], true);
+        assert_eq!(parse(&m.execute("develop.set", &json!({"control": "crop.angle", "value": 10.0}).to_string()))["ok"], true);
+        let p = m.view_to_mask(id, None, &[[0.0, 0.0], [0.5, 0.5], [0.9, 0.2]]).unwrap();
+        assert!((p[0][0] - 0.0).abs() > 0.01 || (p[0][1] - 0.0).abs() > 0.01, "the corner moved under the crop: {p:?}");
+        let back = m.mask_to_view(id, None, &p).unwrap();
+        for (q, b) in [[0.0, 0.0], [0.5, 0.5], [0.9, 0.2]].iter().zip(&back) {
+            let b = b.unwrap();
+            assert!((q[0] - b[0]).abs() < 1e-4 && (q[1] - b[1]).abs() < 1e-4, "{q:?} → {b:?}");
+        }
+        assert!(m.view_to_mask(id, None, &[[f64::NAN, 0.0]]).is_err());
+        let a = m.mask_aspect(id).unwrap();
+        assert!(a.is_finite() && a > 0.0, "{a}");
+        assert!(m.view_to_mask(id, Some(9999), &[[0.5, 0.5]]).is_err());
+        assert!(m.view_to_mask(u64::MAX, None, &[[0.5, 0.5]]).is_err());
+    }
+
+    #[test]
+    fn a_segmentation_is_added_to_and_taken_from_a_mask() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        assert_eq!(parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()))["ok"], true);
+        assert_eq!(parse(&m.execute("mask.add", r#"{"kind": "radial"}"#))["ok"], true);
+        let mask = parse(&m.execute("develop.get", ""))["result"]["masks"][0]["id"].as_u64().unwrap() as u32;
+        let probs = vec![0.9f32; 16 * 16];
+        let r = parse(&m.add_seg_component(mask, "subtract", "Subject", 16, &probs, false));
+        assert_eq!(r["ok"], true, "{r}");
+        let d = parse(&m.execute("develop.get", ""))["result"].clone();
+        assert_eq!(d["masks"][0]["components"].as_array().map(Vec::len), Some(2), "{d}");
+        assert_eq!(parse(&m.add_seg_component(mask, "xor", "Subject", 16, &probs, false))["kind"], "BadParams");
+        assert_eq!(parse(&m.add_seg_component(mask, "add", "Subject", 16, &probs[..10], false))["kind"], "BadParams");
+    }
+
+    #[test]
+    fn mask_tools_the_phone_uses_answer() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        assert_eq!(parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()))["ok"], true);
+        for kind in ["brush", "linear", "radial", "colorRange", "luminanceRange"] {
+            let r = parse(&m.execute("mask.add", &json!({"kind": kind}).to_string()));
+            assert_eq!(r["ok"], true, "{kind}: {r}");
+        }
+        let d = parse(&m.execute("develop.get", ""))["result"].clone();
+        let masks = d["masks"].as_array().unwrap().clone();
+        let brush = masks[0]["id"].as_u64().unwrap();
+        // a stroke, as the brush sends it
+        let r = parse(&m.execute(
+            "mask.brushStroke",
+            &json!({"id": brush, "points": [[0.2, 0.2], [0.5, 0.5]], "size": 0.04, "feather": 50.0, "flow": 100.0, "erase": false}).to_string(),
+        ));
+        assert_eq!(r["ok"], true, "{r}");
+        // a radial's shape moved as the handles send it (the shape read back, changed)
+        let radial = &masks[2];
+        let mut shape = radial["components"][0]["shape"].clone();
+        shape["center"] = json!({"x": 0.3, "y": 0.4});
+        let r = parse(&m.execute("mask.update", &json!({"id": radial["id"], "component": 0, "shape": shape}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let d = parse(&m.execute("develop.get", ""))["result"].clone();
+        assert_eq!(d["masks"][2]["components"][0]["shape"]["center"]["x"], 0.3, "{d}");
+        // colour sample, refine, rename, duplicate, hide
+        let color = masks[3]["id"].as_u64().unwrap();
+        for (cmd, p) in [
+            ("mask.sampleColor", json!({"id": color, "x": 0.5, "y": 0.5, "add": false})),
+            ("mask.refine", json!({"id": color, "value": 40.0})),
+            ("mask.rename", json!({"id": color, "name": "Blues"})),
+            ("mask.duplicate", json!({"id": color, "invert": true})),
+            ("mask.visible", json!({"id": color, "visible": false})),
+            ("mask.addComponent", json!({"id": color, "op": "subtract", "kind": "radial"})),
+        ] {
+            let r = parse(&m.execute(cmd, &p.to_string()));
+            assert_eq!(r["ok"], true, "{cmd}: {r}");
+        }
+    }
+
+    #[test]
+    fn the_lens_database_needs_a_library_folder() {
+        // no library: a clear answer, not the engine's settings-folder error or a panic
+        let m = Mobile::demo();
+        assert_eq!(parse(&m.execute("lens.downloadDatabase", ""))["kind"], "Unsupported");
+        assert_eq!(parse(&m.execute("lens.databaseStatus", ""))["ok"], true);
+    }
+
+    #[test]
+    fn edit_tools_the_phone_uses_answer() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        assert_eq!(parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()))["ok"], true);
+        let profiles = parse(&m.execute("profiles.list", ""));
+        let first = profiles["result"][0]["id"].as_str().unwrap().to_string();
+        for (cmd, p) in [
+            ("develop.wb", json!({"mode": "daylight"})),
+            ("develop.wbPick", json!({"x": 0.5, "y": 0.5})),
+            ("pointColor.pick", json!({"x": 0.4, "y": 0.6})),
+            ("pointColor.delete", json!({"index": 0})),
+            ("spot.add", json!({"mode": "heal", "points": [[0.3, 0.3]], "size": 0.025})),
+            ("spot.add", json!({"mode": "fill", "points": [[0.6, 0.3]], "size": 0.025})),
+            ("spot.delete", json!({})),
+            ("redeye.add", json!({"center": [0.5, 0.4], "rx": 0.02, "ry": 0.02})),
+            ("redeye.delete", json!({"index": 0})),
+            ("geometry.upright", json!({"mode": "auto"})),
+            ("develop.hdr", json!({"enabled": true})),
+            ("develop.autoBwMix", json!({})),
+            ("develop.profile", json!({"id": first})),
+            ("spot.findDust", json!({"sensitivity": 50})),
+        ] {
+            let r = parse(&m.execute(cmd, &p.to_string()));
+            assert_eq!(r["ok"], true, "{cmd} {p}: {r}");
+        }
+        // Auto straighten answers either way (a photo with no clear lines says why)
+        let r = parse(&m.execute("crop.autoStraighten", ""));
+        assert_eq!(r["ok"], true, "{r}");
+        let d = parse(&m.execute("develop.get", ""))["result"].clone();
+        assert_eq!(d["hdr"]["enabled"], true);
+        assert_eq!(d["treatment"], "bw");
+        assert_eq!(d["profile"]["id"], first.as_str());
+        assert_eq!(d["geometry"]["upright"], "auto", "{}", d["geometry"]);
+    }
+
+    #[test]
+    fn workflow_commands_the_phone_uses_answer() {
+        let m = Mobile::demo();
+        let ids = m.photos();
+        let (id, other) = (ids[0], ids[1]);
+        assert_eq!(parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()))["ok"], true);
+        assert_eq!(parse(&m.execute("develop.set", r#"{"control": "light.exposure", "value": 0.7}"#))["ok"], true);
+        assert_eq!(parse(&m.execute("version.create", r#"{"name": "Bright"}"#))["ok"], true);
+        assert_eq!(parse(&m.execute("develop.set", r#"{"control": "light.exposure", "value": -0.4}"#))["ok"], true);
+        let h = parse(&m.execute("history.list", ""))["result"].clone();
+        assert!(h["history"].as_array().is_some_and(|a| a.len() >= 2), "{h}");
+        assert_eq!(h["versions"][0]["name"], "Bright", "{h}");
+        assert_eq!(parse(&m.execute("history.restore", r#"{"index": 0}"#))["ok"], true);
+        for (cmd, p) in [
+            ("version.restore", json!({"index": 0})),
+            ("version.rename", json!({"index": 0, "name": "Bright 2"})),
+            ("version.delete", json!({"index": 0})),
+            ("develop.copy", json!({})),
+            ("develop.paste", json!({"ids": [other]})),
+            ("preset.create", json!({"name": "Phone look", "group": "User Presets"})),
+        ] {
+            let r = parse(&m.execute(cmd, &p.to_string()));
+            assert_eq!(r["ok"], true, "{cmd}: {r}");
+        }
+        // every export option the dialog sends
+        let dir = std::env::temp_dir().join(format!("lightcraft-mobile-export-opts-{}", std::process::id()));
+        for o in [
+            json!({"format": "png", "colorSpace": "displayp3", "metadata": "none", "removeLocation": true, "resize": {"mode": "longEdge", "value": 96, "dontEnlarge": true}}),
+            json!({"format": "webp", "quality": 70, "metadata": "copyright", "resize": {"mode": "longEdge", "value": 96, "dontEnlarge": true}}),
+            json!({"format": "jpeg", "quality": 80, "colorSpace": "adobergb", "metadata": "allexceptcamera", "resize": {"mode": "longEdge", "value": 96, "dontEnlarge": true}}),
+        ] {
+            let path = m.export(id, &o.to_string(), dir.to_str().unwrap()).unwrap();
+            assert!(std::fs::metadata(&path).is_ok_and(|f| f.len() > 0), "{o} → {path}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -41,6 +41,9 @@ import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.AutoFixHigh
 import androidx.compose.material.icons.outlined.BlurOn
+import androidx.compose.material.icons.outlined.Brightness6
+import androidx.compose.material.icons.outlined.Brush
+import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.Contrast
@@ -58,6 +61,8 @@ import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.SaveAlt
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Straighten
+import androidx.compose.material.icons.outlined.Style
+import androidx.compose.material.icons.outlined.Healing
 import androidx.compose.material.icons.outlined.Thermostat
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Vignette
@@ -209,6 +214,8 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                 } else {
                     CircularProgressIndicator(Modifier.align(Alignment.Center), color = Lc.accent)
                 }
+                if (tab == MainTab.Masking && !compare && !holding && fit != null) MaskCanvas(vm, ViewMap(fit, zoom, pan, area))
+                if (tab == MainTab.Edit && !compare && !holding && fit != null) PhotoTapLayer(vm, ViewMap(fit, zoom, pan, area))
                 if (holding && !removing) Pill("BEFORE", Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 16.dp, top = 56.dp))
             }
             // icons over the photo
@@ -226,6 +233,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                     if (compare) vm.loadBefore()
                 }
                 OverlayIcon(Icons.Outlined.Share, "Export and share", vm::share)
+                WorkflowMenu(vm)
             }
             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
         }
@@ -351,6 +359,8 @@ private fun Panel(vm: LightCraftViewModel, tab: MainTab, tool: Tool?) {
             }
             ToolKind.Sliders -> SliderPanel(vm, tool, controls)
             ToolKind.LensBlur -> LensBlurPanel(vm, controls)
+            ToolKind.Profile -> ProfilePanel(vm, controls)
+            ToolKind.Heal -> HealPanel(vm)
             else -> {}
         }
         MainTab.Quick -> QuickPanel(vm, controls)
@@ -426,7 +436,8 @@ private fun LensBlurPanel(vm: LightCraftViewModel, all: List<Control>) {
 
 @Composable
 private fun SliderPanel(vm: LightCraftViewModel, tool: Tool, all: List<Control>) {
-    val groups = tool.groups.filter { g -> all.any { g.matches(it.id) } }
+    // Point Color shows before it has a sample (its sliders come with the first one)
+    val groups = tool.groups.filter { g -> g.style == GroupStyle.PointColor || all.any { g.matches(it.id) } }
     var selected by remember(tool.id) { mutableIntStateOf(0) }
     var band by rememberSaveable { mutableIntStateOf(0) }
     var range by rememberSaveable { mutableIntStateOf(1) }
@@ -435,7 +446,16 @@ private fun SliderPanel(vm: LightCraftViewModel, tool: Tool, all: List<Control>)
     Column(Modifier.fillMaxWidth()) {
         if (groups.size > 1) Pills(groups.map { it.title }, groups.indexOf(group), { selected = it }, onReset = { vm.resetGroup(group) })
         ScrollList(max = if (group.style == GroupStyle.Grading) 300.dp else 210.dp) {
-            if (tool.id == "optics") OpticsSwitches(vm)
+            when {
+                tool.id == "optics" -> {
+                    OpticsSwitches(vm)
+                    LensDbRow(vm)
+                }
+                tool.id == "light" -> HdrRow(vm)
+                tool.id == "geometry" -> UprightRow(vm)
+                group.title == "Color" -> WhiteBalanceRow(vm)
+                group.title == "B&W" -> BwRow(vm)
+            }
             when (group.style) {
                 GroupStyle.Mixer -> MixerPanel(controls, band, { band = it }, vm::setControl, vm::finishInteraction, vm::resetControl)
                 GroupStyle.Grading -> GradingPanel(
@@ -445,6 +465,10 @@ private fun SliderPanel(vm: LightCraftViewModel, tool: Tool, all: List<Control>)
                     onDone = vm::finishInteraction,
                     onReset = vm::resetControl,
                 )
+                GroupStyle.PointColor -> {
+                    PointColorRow(vm)
+                    Sliders(vm, controls)
+                }
                 GroupStyle.Sliders -> Sliders(vm, controls)
             }
         }
@@ -528,6 +552,9 @@ private fun CropPanel(vm: LightCraftViewModel, straighten: List<Control>) {
                 )
             }
             item {
+                Text("Auto straighten", fontSize = 14.sp, color = Lc.text, modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(Lc.raised).clickable { vm.autoStraighten() }.padding(horizontal = 14.dp, vertical = 7.dp))
+            }
+            item {
                 Text("Reset", fontSize = 14.sp, color = Lc.label, modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable { vm.cropCommand("crop.reset") }.padding(horizontal = 12.dp, vertical = 7.dp))
             }
         }
@@ -539,64 +566,6 @@ private fun CropPanel(vm: LightCraftViewModel, straighten: List<Control>) {
         }
         straighten.forEach { c ->
             LrSlider(c.label, c.value, c.min, c.max, c.default, c.decimals, "°", { vm.setControl(c.id, it) }, vm::finishInteraction, { vm.resetControl(c.id) }, Modifier.padding(horizontal = 22.dp))
-        }
-    }
-}
-
-@Composable
-private fun MaskPanel(vm: LightCraftViewModel) {
-    val masks by vm.masks.collectAsStateWithLifecycle()
-    val active by vm.activeMask.collectAsStateWithLifecycle()
-    val mask = masks.firstOrNull { it.id == active }
-    Column(Modifier.fillMaxWidth()) {
-        if (masks.isEmpty()) {
-            Text(
-                "Pick Subject, Background or Sky to select it with on-device AI, or add a Linear or Radial gradient.",
-                fontSize = 13.sp,
-                color = Lc.label,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 14.dp),
-            )
-            return@Column
-        }
-        Row(Modifier.fillMaxWidth().height(46.dp).padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            LazyRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(masks, key = { it.id }) { m ->
-                    val on = m.id == active
-                    Text(
-                        m.name,
-                        fontSize = 14.sp,
-                        color = if (on) Color.White else Lc.label,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(if (on) Lc.accent else Lc.raised)
-                            .clickable { vm.selectMask(m.id) }
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                    )
-                }
-            }
-            val overlay by vm.maskOverlay.collectAsStateWithLifecycle()
-            IconButton(onClick = { vm.setMaskOverlay(!overlay) }) {
-                Icon(
-                    if (overlay) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                    if (overlay) "Hide mask overlay" else "Show mask overlay",
-                    tint = if (overlay) Lc.accent else Lc.label,
-                )
-            }
-            IconButton(onClick = { vm.maskCommand("mask.invert") }) { Icon(Icons.Outlined.InvertColors, "Invert mask", tint = Lc.label) }
-            IconButton(onClick = { vm.maskCommand("mask.delete") }) { Icon(Icons.Outlined.Delete, "Delete mask", tint = Lc.label) }
-        }
-        if (mask != null) {
-            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 200.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 4.dp)) {
-                items(Tools.local, key = { it.key }) { s ->
-                    LrSlider(
-                        s.label, mask.adjust[s.key] ?: 0f, s.min, s.max, 0f, s.decimals, if (s.key == "exposure") "EV" else "",
-                        onChange = { vm.setMaskValue(s.key, it) },
-                        onDone = vm::finishInteraction,
-                        onReset = { vm.setMaskValue(s.key, 0f); vm.finishInteraction() },
-                    )
-                }
-            }
         }
     }
 }
@@ -656,6 +625,9 @@ private fun iconOf(t: Tool, tab: MainTab): ImageVector = when (tab) {
         "background" -> Icons.Outlined.Wallpaper
         "sky" -> Icons.Outlined.Cloud
         "linear" -> Icons.Outlined.Gradient
+        "brush" -> Icons.Outlined.Brush
+        "color" -> Icons.Outlined.Palette
+        "luminance" -> Icons.Outlined.Brightness6
         else -> Icons.Outlined.RadioButtonUnchecked
     }
     MainTab.Remove -> when (t.id) {
@@ -675,6 +647,8 @@ private fun iconOf(t: Tool, tab: MainTab): ImageVector = when (tab) {
         "detail" -> Icons.Outlined.Details
         "optics" -> Icons.Outlined.CameraAlt
         "blur" -> Icons.Outlined.BlurOn
+        "profile" -> Icons.Outlined.Style
+        "heal" -> Icons.Outlined.Healing
         else -> Icons.Outlined.Straighten
     }
 }

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use jni::JNIEnv;
 use jni::objects::{JClass, JFloatArray, JString};
-use jni::sys::{jboolean, jfloat, jint, jintArray, jlong, jlongArray, jstring};
+use jni::sys::{jboolean, jdouble, jfloat, jfloatArray, jint, jintArray, jlong, jlongArray, jstring};
 use lightcraft_mobile::{Frame, Mobile};
 
 static SESSIONS: Mutex<Vec<Option<Arc<Mobile>>>> = Mutex::new(Vec::new());
@@ -87,6 +87,27 @@ fn rust_string(env: &mut JNIEnv, s: &JString) -> Result<String, String> {
 
 fn java_string(env: &mut JNIEnv, s: &str) -> jstring {
     env.new_string(s).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
+fn float_array(env: &mut JNIEnv, data: &[f32]) -> jfloatArray {
+    let Ok(len) = i32::try_from(data.len()) else { return std::ptr::null_mut() };
+    match env.new_float_array(len) {
+        Ok(arr) => match env.set_float_array_region(&arr, 0, data) {
+            Ok(()) => arr.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// `[x0, y0, x1, y1, …]` → points (an odd count drops the last value).
+fn pairs(v: &[f32]) -> Vec<[f64; 2]> {
+    v.chunks_exact(2).map(|c| [f64::from(c[0]), f64::from(c[1])]).collect()
+}
+
+/// A mask id from Kotlin, where a negative one means "a new mask".
+fn mask_arg(mask: jlong) -> Option<u32> {
+    u32::try_from(mask).ok()
 }
 
 fn int_array(env: &mut JNIEnv, data: &[i32]) -> jintArray {
@@ -321,6 +342,28 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeAddSe
     java_string(&mut env, &answer)
 }
 
+/// The phone's segmentation as a part of mask `mask` (`op` add / subtract / intersect); a JSON answer.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeAddSegComponent<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    mask: jlong,
+    op: JString<'l>,
+    side: jint,
+    probs: JFloatArray<'l>,
+    invert: jboolean,
+) -> jstring {
+    let r = rust_string(&mut env, &op).and_then(|op| {
+        let probs = floats(&mut env, &probs)?;
+        let side = u32::try_from(side).map_err(|_| format!("bad mask size {side}"))?;
+        let mask = u32::try_from(mask).map_err(|_| format!("no mask {mask}"))?;
+        guarded(|| Ok(session(handle)?.add_seg_component(mask, &op, "Subject", side, &probs, invert != 0)))
+    });
+    let answer = r.unwrap_or_else(|e| error_json(&e));
+    java_string(&mut env, &answer)
+}
+
 /// `[width, height]` of the background-removal workspace.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutoutBegin<'l>(
@@ -401,6 +444,62 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeRende
     });
     match r {
         Ok(f) => int_array(&mut env, &frame_ints(&f)),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeViewToMask<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    mask: jlong,
+    points: JFloatArray<'l>,
+) -> jfloatArray {
+    let r = guarded(|| {
+        let pts = pairs(&floats(&mut env, &points)?);
+        session(handle)?.view_to_mask(photo_id(photo)?, mask_arg(mask), &pts)
+    });
+    match r {
+        Ok(v) => float_array(&mut env, &v.iter().flat_map(|p| [p[0] as f32, p[1] as f32]).collect::<Vec<_>>()),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeMaskAspect<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+) -> jdouble {
+    let r = guarded(|| session(handle)?.mask_aspect(photo_id(photo)?));
+    or_throw(&mut env, r)
+}
+
+/// Mask coordinates → view (0..1); a point that has no place in the view comes back as NaN, NaN.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeMaskToView<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    mask: jlong,
+    points: JFloatArray<'l>,
+) -> jfloatArray {
+    let r = guarded(|| {
+        let pts = pairs(&floats(&mut env, &points)?);
+        session(handle)?.mask_to_view(photo_id(photo)?, mask_arg(mask), &pts)
+    });
+    match r {
+        Ok(v) => float_array(&mut env, &v.iter().flat_map(|p| p.map_or([f32::NAN, f32::NAN], |p| [p[0] as f32, p[1] as f32])).collect::<Vec<_>>()),
         Err(e) => {
             throw(&mut env, &e);
             std::ptr::null_mut()
