@@ -4063,6 +4063,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lightcraft-ai"
+version = "0.21.1"
+dependencies = [
+ "lightcraft-fetch",
+ "lightcraft-nn",
+ "lightcraft-testkit",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "lightcraft-android"
 version = "0.21.1"
 dependencies = [
