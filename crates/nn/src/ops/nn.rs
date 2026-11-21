@@ -40,41 +40,126 @@ fn pads2(n: &Node, ih: usize, iw: usize, k: (usize, usize), s: (usize, usize), d
     }
 }
 
-/// Zero-pad an NCHW candle tensor by `[top, left, bottom, right]`.
-fn pad_nchw(x: candle_core::Tensor, p: [usize; 4], value: f32) -> Result<candle_core::Tensor> {
-    if p == [0; 4] {
-        return Ok(x);
-    }
-    if value == 0.0 {
-        return Ok(x.pad_with_zeros(2, p[0], p[2])?.pad_with_zeros(3, p[1], p[3])?);
-    }
-    let t = Tensor::from_candle(&x)?;
-    let pads = [0, 0, p[0] as i64, p[1] as i64, 0, 0, p[2] as i64, p[3] as i64];
-    super::shape::pad(&t, &pads, "constant", f64::from(value), None)?.to_candle()
+/// Elements one im2col tile may hold (64 MB of f32): big layers run in bands of output rows.
+const COL_BUDGET: usize = 16 * 1024 * 1024;
+
+/// `w [m, k] × col [k, n]` on candle's multi-threaded gemm.
+fn gemm_mm(w: &[f32], m: usize, k: usize, col: Vec<f32>, n: usize) -> Result<Vec<f32>> {
+    let dev = candle_core::Device::Cpu;
+    let a = candle_core::Tensor::from_slice(w, (m, k), &dev)?;
+    let b = candle_core::Tensor::from_vec(col, (k, n), &dev)?;
+    Ok(a.matmul(&b)?.flatten_all()?.to_vec1::<f32>()?)
 }
 
 pub fn conv(n: &Node, x: &Tensor, w: &Tensor, b: Option<&Tensor>) -> Result<Tensor> {
     if x.rank() != 4 || w.rank() != 4 {
         return Err(Error::Unsupported(format!("Conv of rank {} (only 2-D)", x.rank())));
     }
-    let (k, s, d) = ((w.shape[2], w.shape[3]), pair(n.ints("strides"), 1)?, pair(n.ints("dilations"), 1)?);
-    if s.0 != s.1 || d.0 != d.1 || s.0 == 0 || d.0 == 0 {
-        return Err(Error::Unsupported(format!("Conv strides {s:?} dilations {d:?}")));
+    let [bn, c, ih, iw] = x.shape[..] else { return Err(Error::Run("Conv input".into())) };
+    let [o, cg, kh, kw] = w.shape[..] else { return Err(Error::Run("Conv weight".into())) };
+    let (s, d) = (pair(n.ints("strides"), 1)?, pair(n.ints("dilations"), 1)?);
+    if s.0 == 0 || s.1 == 0 || d.0 == 0 || d.1 == 0 {
+        return Err(Error::Run("Conv strides or dilations".into()));
     }
     let groups = usize::try_from(n.int("group").unwrap_or(1)).map_err(|_| Error::Run("Conv group".into()))?.max(1);
-    let p = pads2(n, x.shape[2], x.shape[3], k, s, d)?;
-    let mut xc = x.to_candle()?;
-    let wc = w.to_candle()?;
-    let sym = p[0] == p[2] && p[1] == p[3] && p[0] == p[1];
-    let pad = if sym { p[0] } else { 0 };
-    if !sym {
-        xc = pad_nchw(xc, p, 0.0)?;
+    if cg.checked_mul(groups) != Some(c) || o % groups != 0 {
+        return Err(Error::Run(format!("Conv of {c} channels by {o}×{cg} in {groups} groups")));
     }
-    let mut y = xc.conv2d(&wc, pad, s.0, d.0, groups)?;
-    if let Some(b) = b {
-        y = y.broadcast_add(&b.to_candle()?.reshape((1, b.len(), 1, 1))?)?;
+    let p = pads2(n, ih, iw, (kh, kw), s, d)?;
+    let (ph, pw) = (ih + p[0] + p[2], iw + p[1] + p[3]);
+    let (span_h, span_w) = ((kh - 1) * d.0 + 1, (kw - 1) * d.1 + 1);
+    if ph < span_h || pw < span_w {
+        return Err(Error::Run("Conv window larger than its input".into()));
     }
-    Tensor::from_candle(&y)
+    let (oh, ow) = ((ph - span_h) / s.0 + 1, (pw - span_w) / s.1 + 1);
+    numel(&[bn, o, oh, ow])?;
+    let xs = x.fs()?;
+    let ws = w.fs()?;
+    let bias = b.map(|t| t.fs()).transpose()?;
+    // the input value at (channel ch, padded row py, padded column px)
+    let at = |plane: &[f32], py: usize, px: usize| -> f32 {
+        if py < p[0] || px < p[1] || py >= p[0] + ih || px >= p[1] + iw {
+            0.0
+        } else {
+            plane.get((py - p[0]) * iw + (px - p[1])).copied().unwrap_or(0.0)
+        }
+    };
+    let mut out = vec![0f32; bn * o * oh * ow];
+    let og = o / groups;
+    for bi in 0..bn {
+        let img = xs.get(bi * c * ih * iw..(bi + 1) * c * ih * iw).ok_or_else(|| Error::Run("Conv input size".into()))?;
+        let dst = out.get_mut(bi * o * oh * ow..(bi + 1) * o * oh * ow).ok_or_else(|| Error::Run("Conv output size".into()))?;
+        if groups == c && cg == 1 && og == 1 {
+            // depthwise: each output channel reads one input channel
+            dst.par_chunks_mut((oh * ow).max(1)).enumerate().for_each(|(ch, plane_out)| {
+                let plane = img.get(ch * ih * iw..(ch + 1) * ih * iw).unwrap_or(&[]);
+                let k = ws.get(ch * kh * kw..(ch + 1) * kh * kw).unwrap_or(&[]);
+                for y in 0..oh {
+                    for xx in 0..ow {
+                        let mut acc = 0f32;
+                        for ky in 0..kh {
+                            for kx in 0..kw {
+                                acc += k.get(ky * kw + kx).copied().unwrap_or(0.0) * at(plane, y * s.0 + ky * d.0, xx * s.1 + kx * d.1);
+                            }
+                        }
+                        plane_out[y * ow + xx] = acc;
+                    }
+                }
+            });
+        } else {
+            let kdim = cg * kh * kw;
+            for g in 0..groups {
+                let wg = ws.get(g * og * kdim..(g + 1) * og * kdim).ok_or_else(|| Error::Run("Conv weight size".into()))?;
+                let img_g = img.get(g * cg * ih * iw..(g + 1) * cg * ih * iw).ok_or_else(|| Error::Run("Conv input size".into()))?;
+                let simple = kh == 1 && kw == 1 && s == (1, 1) && p == [0; 4];
+                let band = (COL_BUDGET / (kdim * ow).max(1)).clamp(1, oh);
+                let mut y0 = 0;
+                while y0 < oh {
+                    let rows = band.min(oh - y0);
+                    let ncol = rows * ow;
+                    let col: Vec<f32> = if simple {
+                        // a 1×1 convolution is a plain product with the input planes
+                        let mut col = Vec::with_capacity(kdim * ncol);
+                        for ch in 0..cg {
+                            col.extend_from_slice(
+                                img_g
+                                    .get(ch * ih * iw + y0 * iw..ch * ih * iw + (y0 + rows) * iw)
+                                    .ok_or_else(|| Error::Run("Conv input size".into()))?,
+                            );
+                        }
+                        col
+                    } else {
+                        let mut col = vec![0f32; kdim * ncol];
+                        col.par_chunks_mut(ncol.max(1)).enumerate().for_each(|(r, row)| {
+                            let (ch, ky, kx) = (r / (kh * kw), (r / kw) % kh, r % kw);
+                            let plane = img_g.get(ch * ih * iw..(ch + 1) * ih * iw).unwrap_or(&[]);
+                            for y in 0..rows {
+                                let py = (y0 + y) * s.0 + ky * d.0;
+                                for xx in 0..ow {
+                                    row[y * ow + xx] = at(plane, py, xx * s.1 + kx * d.1);
+                                }
+                            }
+                        });
+                        col
+                    };
+                    let prod = gemm_mm(wg, og, kdim, col, ncol)?;
+                    for oc in 0..og {
+                        let src = prod.get(oc * ncol..(oc + 1) * ncol).ok_or_else(|| Error::Run("Conv product size".into()))?;
+                        let at_out = (g * og + oc) * oh * ow + y0 * ow;
+                        dst.get_mut(at_out..at_out + ncol).ok_or_else(|| Error::Run("Conv output size".into()))?.copy_from_slice(src);
+                    }
+                    y0 += rows;
+                }
+            }
+        }
+        if let Some(bias) = bias {
+            dst.par_chunks_mut((oh * ow).max(1)).enumerate().for_each(|(ch, plane)| {
+                let v = bias.get(ch).copied().unwrap_or(0.0);
+                plane.iter_mut().for_each(|q| *q += v);
+            });
+        }
+    }
+    Tensor::f32(vec![bn, o, oh, ow], out)
 }
 
 pub fn conv_transpose(n: &Node, x: &Tensor, w: &Tensor, b: Option<&Tensor>) -> Result<Tensor> {
@@ -134,8 +219,8 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
         sa.extend([m, k]);
         let mut sb = batch.clone();
         sb.extend([k, nn]);
-        let ea = super::shape::expand(&a2, &sa.iter().map(|d| *d as i64).collect::<Vec<_>>())?;
-        let eb = super::shape::expand(&b2, &sb.iter().map(|d| *d as i64).collect::<Vec<_>>())?;
+        let ea = if a2.shape == sa { a2.clone() } else { super::shape::expand(&a2, &sa.iter().map(|d| *d as i64).collect::<Vec<_>>())? };
+        let eb = if b2.shape == sb { b2.clone() } else { super::shape::expand(&b2, &sb.iter().map(|d| *d as i64).collect::<Vec<_>>())? };
         let bn: usize = batch.iter().product();
         let p = ea.reshaped(vec![bn, m, k])?.to_candle()?.matmul(&eb.reshaped(vec![bn, k, nn])?.to_candle()?)?;
         Tensor::from_candle(&p)?.reshaped(out_shape.clone())?
@@ -169,17 +254,47 @@ pub fn gemm(n: &Node, a: &Tensor, b: &Tensor, c: Option<&Tensor>) -> Result<Tens
 }
 
 pub fn max_pool(n: &Node, x: &Tensor) -> Result<Tensor> {
-    if x.rank() != 4 {
-        return Err(Error::Unsupported("MaxPool of rank other than 4".into()));
-    }
+    let [b, c, ih, iw] = x.shape[..] else { return Err(Error::Unsupported("MaxPool of rank other than 4".into())) };
     let k = pair(n.ints("kernel_shape"), 1)?;
     let s = pair(n.ints("strides"), 1)?;
-    let p = pads2(n, x.shape[2], x.shape[3], k, s, (1, 1))?;
-    if n.int("ceil_mode").unwrap_or(0) != 0 || s.0 == 0 || s.1 == 0 {
-        return Err(Error::Unsupported("MaxPool ceil_mode".into()));
+    let d = pair(n.ints("dilations"), 1)?;
+    if s.0 == 0 || s.1 == 0 || d.0 == 0 || d.1 == 0 || k.0 == 0 || k.1 == 0 {
+        return Err(Error::Run("MaxPool window".into()));
     }
-    let xc = pad_nchw(x.to_candle()?, p, f32::NEG_INFINITY)?;
-    Tensor::from_candle(&xc.max_pool2d_with_stride(k, s)?)
+    let p = pads2(n, ih, iw, k, s, d)?;
+    let ceil = n.int("ceil_mode").unwrap_or(0) != 0;
+    let size = |i: usize, lo: usize, hi: usize, k: usize, s: usize, d: usize| -> usize {
+        let span = (i + lo + hi).saturating_sub((k - 1) * d + 1);
+        let o = if ceil { span.div_ceil(s) + 1 } else { span / s + 1 };
+        // a last window that would start in the end padding is dropped (as PyTorch / ONNX Runtime do)
+        if ceil && (o - 1) * s >= i + lo { o - 1 } else { o }
+    };
+    let (oh, ow) = (size(ih, p[0], p[2], k.0, s.0, d.0), size(iw, p[1], p[3], k.1, s.1, d.1));
+    numel(&[b, c, oh, ow])?;
+    let v = x.fs()?;
+    let mut out = vec![0f32; b * c * oh * ow];
+    out.par_chunks_mut((oh * ow).max(1)).enumerate().for_each(|(plane, o)| {
+        let Some(src) = v.get(plane * ih * iw..(plane + 1) * ih * iw) else { return };
+        for y in 0..oh {
+            for xx in 0..ow {
+                let mut m = f32::NEG_INFINITY;
+                for ky in 0..k.0 {
+                    let sy = (y * s.0 + ky * d.0) as i64 - p[0] as i64;
+                    if sy < 0 || sy >= ih as i64 {
+                        continue;
+                    }
+                    for kx in 0..k.1 {
+                        let sx = (xx * s.1 + kx * d.1) as i64 - p[1] as i64;
+                        if sx >= 0 && sx < iw as i64 {
+                            m = m.max(src.get(sy as usize * iw + sx as usize).copied().unwrap_or(f32::NEG_INFINITY));
+                        }
+                    }
+                }
+                o[y * ow + xx] = m;
+            }
+        }
+    });
+    Tensor::f32(vec![b, c, oh, ow], out)
 }
 
 pub fn global_avg_pool(x: &Tensor) -> Result<Tensor> {
@@ -270,6 +385,21 @@ pub fn softmax(x: &Tensor, ax: i64, log: bool) -> Result<Tensor> {
     let outer: usize = x.shape[..a].iter().product();
     let v = x.fs()?;
     let mut out = vec![0f32; v.len()];
+    if inner == 1 {
+        out.par_chunks_mut(dim.max(1)).zip(v.par_chunks(dim.max(1))).for_each(|(o, src)| {
+            let m = src.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum = 0f32;
+            for (d, q) in o.iter_mut().zip(src) {
+                *d = (q - m).exp();
+                sum += *d;
+            }
+            let ls = sum.ln();
+            for (d, q) in o.iter_mut().zip(src) {
+                *d = if log { q - m - ls } else { *d / sum };
+            }
+        });
+        return Tensor::f32(x.shape.clone(), out);
+    }
     out.par_chunks_mut((dim * inner).max(1)).enumerate().for_each(|(o, chunk)| {
         for i in 0..inner {
             let at = |j: usize| v.get((o * dim + j) * inner + i).copied().unwrap_or(0.0);
@@ -296,6 +426,22 @@ pub fn reduce(op: &str, x: &Tensor, axes: Option<Vec<i64>>, keep: bool, noop_emp
     };
     let out_keep: Vec<usize> = (0..r).map(|d| if ax.contains(&d) { 1 } else { x.shape[d] }).collect();
     let total = numel(&out_keep)?;
+    // the common case: reducing the last axes (LayerNorm's mean, a pooled vector)
+    let trailing = !ax.is_empty() && ax.iter().all(|a| *a >= r - ax.len());
+    if trailing && matches!(op, "ReduceMean" | "ReduceSum" | "ReduceMax") && matches!(x.buf, crate::tensor::Buf::F(_)) {
+        let inner: usize = ax.iter().map(|d| x.shape[*d]).product();
+        let v = x.fs()?;
+        let acc: Vec<f32> = v
+            .par_chunks(inner.max(1))
+            .map(|row| match op {
+                "ReduceMax" => row.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+                "ReduceMean" => row.iter().sum::<f32>() / inner.max(1) as f32,
+                _ => row.iter().sum::<f32>(),
+            })
+            .collect();
+        let shape = if keep { out_keep } else { (0..r).filter(|d| !ax.contains(d)).map(|d| x.shape[d]).collect() };
+        return Tensor::f32(shape, acc);
+    }
     let ost = strides(&out_keep);
     let st = strides(&x.shape);
     let v = x.to_f32s();
@@ -387,10 +533,27 @@ pub fn resize(n: &Node, x: &Tensor, scales: Option<&[f32]>, sizes: Option<&[i64]
     };
     let v = x.fs()?;
     let mut out = vec![0f32; b * c * oh * ow];
-    let linear = match mode {
-        "linear" | "bilinear" => true,
-        "nearest" => false,
+    let (linear, cubic) = match mode {
+        "linear" | "bilinear" => (true, false),
+        "nearest" => (false, false),
+        "cubic" => (false, true),
         other => return Err(Error::Unsupported(format!("Resize mode {other}"))),
+    };
+    let ca = n.float("cubic_coeff_a").unwrap_or(-0.75);
+    let exclude = n.int("exclude_outside").unwrap_or(0) != 0;
+    // the four cubic weights for a fractional offset t (Keys, with a = cubic_coeff_a)
+    let cubic_w = |t: f32| -> [f32; 4] {
+        let w = |x: f32| {
+            let x = x.abs();
+            if x <= 1.0 {
+                ((ca + 2.0) * x - (ca + 3.0)) * x * x + 1.0
+            } else if x < 2.0 {
+                ((ca * x - 5.0 * ca) * x + 8.0 * ca) * x - 4.0 * ca
+            } else {
+                0.0
+            }
+        };
+        [w(1.0 + t), w(t), w(1.0 - t), w(2.0 - t)]
     };
     out.par_chunks_mut((oh * ow).max(1)).enumerate().for_each(|(plane, o)| {
         let Some(p) = v.get(plane * ih * iw..(plane + 1) * ih * iw) else { return };
@@ -399,7 +562,27 @@ pub fn resize(n: &Node, x: &Tensor, scales: Option<&[f32]>, sizes: Option<&[i64]
             let fy = src(y, oh, ih, sh);
             for xx in 0..ow {
                 let fx = src(xx, ow, iw, sw);
-                o[y * ow + xx] = if linear {
+                o[y * ow + xx] = if cubic {
+                    let (y0, x0) = (fy.floor(), fx.floor());
+                    let (wy, wx) = (cubic_w(fy - y0), cubic_w(fx - x0));
+                    let (y0, x0) = (y0 as i64, x0 as i64);
+                    let mut acc = 0f32;
+                    let mut norm = 0f32;
+                    for (i, wyi) in wy.iter().enumerate() {
+                        let sy = y0 - 1 + i as i64;
+                        for (j, wxj) in wx.iter().enumerate() {
+                            let sx = x0 - 1 + j as i64;
+                            let inside = sy >= 0 && sx >= 0 && sy < ih as i64 && sx < iw as i64;
+                            if exclude && !inside {
+                                continue;
+                            }
+                            let (cy, cx) = (sy.clamp(0, ih as i64 - 1) as usize, sx.clamp(0, iw as i64 - 1) as usize);
+                            acc += wyi * wxj * at(cy, cx);
+                            norm += wyi * wxj;
+                        }
+                    }
+                    if exclude && norm != 0.0 { acc / norm } else { acc }
+                } else if linear {
                     let fy = fy.clamp(0.0, (ih - 1) as f32);
                     let fx = fx.clamp(0.0, (iw - 1) as f32);
                     let (y0, x0) = (fy.floor() as usize, fx.floor() as usize);

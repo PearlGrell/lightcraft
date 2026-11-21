@@ -122,11 +122,42 @@ fn zip<A: Copy + Sync, B: Copy + Sync, C: Send>(
             return Ok((out, v));
         }
     }
-    let ia = broadcast_index(ash, &out);
-    let ib = broadcast_index(bsh, &out);
-    let get = |i: usize| -> Option<C> { Some(f(*a.get(*ia.get(i)?)?, *b.get(*ib.get(i)?)?)) };
-    let v: Option<Vec<C>> = if total >= PAR { (0..total).into_par_iter().map(get).collect() } else { (0..total).map(get).collect() };
-    Ok((out, v.ok_or_else(|| Error::Run("broadcast index out of range".into()))?))
+    // row by row over the last axis: each input either walks it (stride 1) or repeats one value
+    let n = out.len();
+    let last = *out.last().unwrap_or(&1);
+    let align = |sh: &[usize]| -> Vec<usize> {
+        let st = crate::tensor::strides(sh);
+        (0..n)
+            .map(|i| {
+                if i + sh.len() >= n {
+                    let j = i + sh.len() - n;
+                    if sh[j] == 1 { 0 } else { st[j] }
+                } else {
+                    0
+                }
+            })
+            .collect()
+    };
+    let (sa, sb) = (align(ash), align(bsh));
+    let (la, lb) = (sa.last().copied().unwrap_or(0), sb.last().copied().unwrap_or(0));
+    let rows = total / last.max(1);
+    let mut v: Vec<C> = Vec::with_capacity(total);
+    let row = |r: usize| -> Option<Vec<C>> {
+        // the row's starting offsets in a and b
+        let (mut oa, mut ob, mut rem) = (0usize, 0usize, r);
+        for d in (0..n.saturating_sub(1)).rev() {
+            let c = rem % out[d];
+            rem /= out[d];
+            oa += c * sa[d];
+            ob += c * sb[d];
+        }
+        (0..last).map(|i| Some(f(*a.get(oa + i * la)?, *b.get(ob + i * lb)?))).collect()
+    };
+    let parts: Option<Vec<Vec<C>>> = if total >= PAR { (0..rows).into_par_iter().map(row).collect() } else { (0..rows).map(row).collect() };
+    for p in parts.ok_or_else(|| Error::Run("broadcast index out of range".into()))? {
+        v.extend(p);
+    }
+    Ok((out, v))
 }
 
 /// Arithmetic: Add, Sub, Mul, Div, Pow, Max, Min, Mod.

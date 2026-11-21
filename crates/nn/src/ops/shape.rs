@@ -1,6 +1,8 @@
 //! Shape and indexing operators. Most build, for each output element, the index of the input
 //! element it copies, and hand that to [`Tensor::take`]: one checked path for every element type.
 
+use rayon::prelude::*;
+
 use crate::tensor::{Buf, Tensor, axis, broadcast_shape, numel, strides};
 use crate::{Error, Result};
 
@@ -349,6 +351,46 @@ pub fn pad(x: &Tensor, pads: &[i64], mode: &str, value: f64, axes: Option<&[i64]
     }
     let out: Vec<usize> = (0..r).map(|d| (x.shape[d] as i64 + before[d] + after[d]).max(0) as usize).collect();
     let total = numel(&out)?;
+    // the common case: an image's two spatial axes padded (no crop), the rest untouched
+    if r == 4
+        && before[..2] == [0, 0]
+        && after[..2] == [0, 0]
+        && before[2..].iter().chain(&after[2..]).all(|v| *v >= 0)
+        && let Buf::F(v) = &x.buf
+    {
+        {
+            let (ih, iw, oh, ow) = (x.shape[2] as i64, x.shape[3] as i64, out[2], out[3]);
+            let src = |c: i64, n: i64| -> Option<i64> {
+                if (0..n).contains(&c) {
+                    return Some(c);
+                }
+                match mode {
+                    "edge" => Some(c.clamp(0, n - 1)),
+                    "reflect" if n > 1 => {
+                        let p = 2 * (n - 1);
+                        let m = c.rem_euclid(p);
+                        Some(if m < n { m } else { p - m })
+                    }
+                    "reflect" => Some(0),
+                    _ => None,
+                }
+            };
+            let cols: Vec<Option<i64>> = (0..ow as i64).map(|x| src(x - before[3], iw)).collect();
+            let mut o = vec![value as f32; total];
+            o.par_chunks_mut((oh * ow).max(1)).enumerate().for_each(|(plane, dst)| {
+                let Some(p) = v.get(plane * (ih * iw) as usize..(plane + 1) * (ih * iw) as usize) else { return };
+                for y in 0..oh {
+                    let Some(sy) = src(y as i64 - before[2], ih) else { continue };
+                    for (xx, sx) in cols.iter().enumerate() {
+                        if let Some(sx) = sx {
+                            dst[y * ow + xx] = p.get((sy * iw + sx) as usize).copied().unwrap_or(0.0);
+                        }
+                    }
+                }
+            });
+            return Tensor::f32(out, o);
+        }
+    }
     let st = strides(&x.shape);
     let ost = strides(&out);
     // per output element: the source index, or None for the constant

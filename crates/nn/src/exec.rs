@@ -101,10 +101,18 @@ fn collect_weights(g: &Graph, out: &mut HashMap<String, Tensor>) -> Result<()> {
     Ok(())
 }
 
+/// `LIGHTCRAFT_NN_PROFILE=1`: print the time each operator type took after a run (stderr).
+fn profiling() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("LIGHTCRAFT_NN_PROFILE").is_some())
+}
+
 fn run_graph(g: &Graph, scope: &mut Scope<'_>, opset: i64, cancel: Option<&AtomicBool>) -> Result<()> {
     let mut left = HashMap::new();
     reads(g, &mut left);
+    let mut times: HashMap<&str, (std::time::Duration, usize)> = HashMap::new();
     for n in &g.nodes {
+        let started = profiling().then(std::time::Instant::now);
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
             return Err(Error::Run("cancelled".into()));
         }
@@ -135,6 +143,18 @@ fn run_graph(g: &Graph, scope: &mut Scope<'_>, opset: i64, cancel: Option<&Atomi
             if !name.is_empty() {
                 scope.vals.insert(name.clone(), t);
             }
+        }
+        if let Some(t0) = started {
+            let e = times.entry(n.op.as_str()).or_default();
+            e.0 += t0.elapsed();
+            e.1 += 1;
+        }
+    }
+    if profiling() && !times.is_empty() {
+        let mut v: Vec<_> = times.into_iter().collect();
+        v.sort_by_key(|e| std::cmp::Reverse(e.1.0));
+        for (op, (d, count)) in v.iter().take(12) {
+            eprintln!("  {op:<22} {:>9.1} ms  ×{count}", d.as_secs_f64() * 1000.0);
         }
     }
     Ok(())
