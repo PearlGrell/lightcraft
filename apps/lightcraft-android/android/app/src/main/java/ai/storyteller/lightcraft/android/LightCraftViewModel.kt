@@ -801,12 +801,74 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         if (pts.size < 2) return
         val points = JSONArray()
         for (i in 0 until pts.size / 2) points.put(JSONArray().put(pts[2 * i].toDouble()).put(pts[2 * i + 1].toDouble()))
-        aiCommand("spot.generate", JSONObject().put("points", points).put("size", _heal.value.size.toDouble()))
+        aiCommand("spot.generate", JSONObject().put("points", points).put("size", _heal.value.size.toDouble()).put("quality", if (_heal.value.best) "best" else "fast"))
     }
 
     private val _suggestions = MutableStateFlow<List<Suggestion>>(emptyList())
     /** What Find objects found, shown as boxes on the photo. */
     val suggestions: StateFlow<List<Suggestion>> = _suggestions.asStateFlow()
+
+    private val _faceModelOffer = MutableStateFlow(false)
+    /** Find blemishes needs the face detector: the Heal panel asks before downloading it. */
+    val faceModelOffer: StateFlow<Boolean> = _faceModelOffer.asStateFlow()
+
+    /** Find blemishes on the faces (heal spots); without the face detector, offer it. */
+    fun findBlemishes() {
+        viewModelScope.launch(commands) {
+            _busy.value = true
+            try {
+                val e = engine ?: return@launch
+                try {
+                    val r = e.execute("spot.findBlemishes", JSONObject().put("sensitivity", 50)) as? JSONObject
+                    if ((r?.optInt("added", -1) ?: -1) == 0) messages.trySend("No blemishes found")
+                    afterEdit()
+                } catch (t: EngineException) {
+                    val m = t.message ?: t.kind
+                    if (m.contains("yunet", ignoreCase = true) || m.contains("face detector", ignoreCase = true)) _faceModelOffer.value = true else messages.trySend(m)
+                }
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
+
+    fun dismissFaceModelOffer() {
+        _faceModelOffer.value = false
+    }
+
+    /** Download the face detector (YuNet, MIT, 0.2 MB) after the user agreed, then find blemishes. */
+    fun downloadFaceModel() {
+        _faceModelOffer.value = false
+        viewModelScope.launch(commands) {
+            _busy.value = true
+            try {
+                val e = engine ?: return@launch
+                try {
+                    e.execute("faces.models.download", JSONObject().put("id", "yunet-2023mar").put("acknowledged", true))
+                    // wait for it to arrive and install (it is small), up to a minute
+                    repeat(60) {
+                        val d = (e.execute("faces.models.downloads") as? JSONObject)?.optJSONArray("downloads")
+                        val st = (0 until (d?.length() ?: 0)).mapNotNull { d?.optJSONObject(it) }.firstOrNull { it.optString("id") == "yunet-2023mar" }
+                        when (st?.optString("state")) {
+                            "installed", "done" -> {
+                                findBlemishes()
+                                return@launch
+                            }
+                            "failed", "cancelled" -> {
+                                messages.trySend("The face detector didn't download: ${st.optString("error")}")
+                                return@launch
+                            }
+                        }
+                        kotlinx.coroutines.delay(1000)
+                    }
+                } catch (t: Exception) {
+                    messages.trySend(t.message ?: "The face detector didn't download")
+                }
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
 
     fun findObjects() {
         aiCommand("ai.detect", JSONObject().put("min", 0.45)) { r ->
@@ -856,7 +918,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         if (pts.size < 2) return
         val points = JSONArray()
         for (i in 0 until pts.size / 2) points.put(JSONArray().put(pts[2 * i].toDouble()).put(pts[2 * i + 1].toDouble()))
-        aiCommand("spot.generate", JSONObject().put("points", points).put("size", size.toDouble()))
+        aiCommand("spot.generate", JSONObject().put("points", points).put("size", size.toDouble()).put("quality", if (_heal.value.best) "best" else "fast"))
     }
 
     /** Mask coordinates → the shown photo (0..1); NaN where a point has no place. */
@@ -988,6 +1050,21 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             "eraser" -> _tool.value = tool
             "ai" -> removeBackground(keepBackground = false)
             "keep" -> removeBackground(keepBackground = true)
+            "people" -> viewModelScope.launch(commands) {
+                _busy.value = true
+                try {
+                    val e = engine ?: return@launch
+                    try {
+                        e.cutoutPeople()
+                        _cutout.value = e.cutoutFrame()
+                    } catch (t: Exception) {
+                        val m = t.message ?: "People cutout failed"
+                        messages.trySend(if (m.contains("isn't downloaded")) "$m. Get MODNet in ⋮ → AI models." else m)
+                    }
+                } finally {
+                    _busy.value = false
+                }
+            }
             "undo" -> cutoutStep { it.cutoutUndo() }
             "reset" -> cutoutStep { it.cutoutReset() }
             "export" -> exportCutout()

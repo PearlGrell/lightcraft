@@ -32,6 +32,7 @@ impl Model {
 
 pub const SELECT: &str = "efficientsam-ti";
 pub const INPAINT: &str = "migan-512";
+pub const INPAINT_BEST: &str = "lama-512";
 pub const DETECT: &str = "dfine-n";
 pub const DEPTH: &str = "depth-anything-v2-small";
 pub const MATTE: &str = "modnet";
@@ -70,6 +71,19 @@ pub const MODELS: &[Model] = &[
         }],
         licence: "MIT License",
         source: "MI-GAN (Sargsyan et al., Picsart AI Research, ICCV 2023), uploaded by its first author",
+    },
+    Model {
+        id: INPAINT_BEST,
+        name: "LaMa",
+        purpose: "Fill large removed areas (best quality, slower)",
+        files: &[ModelFile {
+            name: "inpainting_lama_2025jan.onnx",
+            url: "https://huggingface.co/opencv/inpainting_lama/resolve/aee6d22f0a13e5e35af1c9a1c3afd62841fc6f3f/inpainting_lama_2025jan.onnx",
+            size: 92_591_623,
+            sha256: "7df918ac3921d3daf0aae1d219776cf0dc4e4935f035af81841b40adcf74fdf2",
+        }],
+        licence: "Apache License 2.0",
+        source: "LaMa (Suvorov et al., WACV 2022), quantized ONNX from the OpenCV model zoo",
     },
     Model {
         id: DETECT,

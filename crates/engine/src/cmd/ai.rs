@@ -304,7 +304,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Generative Remove",
             [],
             None,
-            "{points: [[x,y],…] (normalized, as spot.add), size?: fraction of the long edge (0.03), feather?} — remove what the stroke covers and fill it with generated content (MI-GAN 512); the result is stored with the spot, so renders never run the model → {index}",
+            "{points: [[x,y],…] (normalized, as spot.add), size?: fraction of the long edge (0.03), feather?, quality?: fast|best} — remove what the stroke covers and fill it with generated content (fast: MI-GAN 512; best: LaMa, slower, better on large areas); the result is stored with the spot, so renders never run the model → {index}",
             has_active,
             |s, p| {
                 let c = "spot.generate";
@@ -320,8 +320,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 let feather = p.get("feather").and_then(Value::as_f64).unwrap_or(30.0).clamp(0.0, 100.0);
                 let photo = s.active().ok_or_else(|| bad(c, "no active photo"))?;
                 let store = s.ai_store(c)?;
-                if store.status(models::INPAINT).ok() != Some(Status::Ready) {
-                    return Err(ai_err(c, lightcraft_ai::Error::Missing("MI-GAN 512")));
+                let best = p.get("quality").and_then(Value::as_str) == Some("best");
+                let (model, name) = if best { (models::INPAINT_BEST, "LaMa") } else { (models::INPAINT, "MI-GAN 512") };
+                if store.status(model).ok() != Some(Status::Ready) {
+                    return Err(ai_err(c, lightcraft_ai::Error::Missing(name)));
                 }
                 // the picture in the spot's frame, sharp enough that the area is a few hundred pixels
                 let (w0, h0) = s.catalog.photo(photo).map(|ph| (ph.width.max(1) as f64, ph.height.max(1) as f64)).unwrap_or((1.0, 1.0));
@@ -363,7 +365,8 @@ pub fn specs() -> Vec<CommandSpec> {
                         pts.iter().any(|q| ((x - q.x * pw).powi(2) + (y - q.y * ph).powi(2)).sqrt() <= r_px)
                     })
                     .collect();
-                let filled = inpaint::fill(&store, &crop, &hole, None).map_err(|e| ai_err(c, e))?;
+                let filled = if best { inpaint::fill_best(&store, &crop, &hole, None) } else { inpaint::fill(&store, &crop, &hole, None) }
+                    .map_err(|e| ai_err(c, e))?;
                 // the patch covers exactly the cropped pixels
                 let prect = [cx0 as f64 / pw, cy0 as f64 / ph, cx1 as f64 / pw, cy1 as f64 / ph];
                 let patch = SpotPatch::encode(prect, cw as u32, chh as u32, &filled.data).ok_or_else(|| bad(c, "the generated area is too large"))?;

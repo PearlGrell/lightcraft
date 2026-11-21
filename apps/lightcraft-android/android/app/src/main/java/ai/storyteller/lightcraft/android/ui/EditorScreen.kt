@@ -640,6 +640,7 @@ private fun iconOf(t: Tool, tab: MainTab): ImageVector = when (tab) {
         "eraser" -> LcIcons.Remove
         "ai" -> Icons.Outlined.AutoAwesome
         "keep" -> Icons.Outlined.Wallpaper
+        "people" -> Icons.Outlined.Person
         "undo" -> Icons.AutoMirrored.Outlined.Undo
         "reset" -> Icons.Outlined.Restore
         else -> Icons.Outlined.SaveAlt

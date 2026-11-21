@@ -196,7 +196,7 @@ data class ProfileItem(val id: String, val name: String, val group: String)
 data class LensDb(val lenses: Int = 0, val state: String = "idle", val error: String = "")
 
 /** Healing (`spot.add`): mode `heal`, `clone`, `fill` (content-aware remove); size as a fraction of the long edge. */
-data class HealSettings(val mode: String = "heal", val size: Float = 0.025f)
+data class HealSettings(val mode: String = "heal", val size: Float = 0.025f, val best: Boolean = false)
 
 /** How a group's controls are laid out: a list of sliders, the colour mixer, or the grading wheels. */
 enum class GroupStyle { Sliders, Mixer, Grading, PointColor }
@@ -345,6 +345,7 @@ object Tools {
     val remove = listOf(
         Tool("eraser", "Magic Eraser"),
         Tool("ai", "Remove BG", ToolKind.Action),
+        Tool("people", "People (AI)", ToolKind.Action),
         Tool("keep", "Keep BG", ToolKind.Action),
         Tool("undo", "Undo", ToolKind.Action),
         Tool("reset", "Restore", ToolKind.Action),

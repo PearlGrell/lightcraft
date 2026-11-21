@@ -48,9 +48,14 @@ fn reads(g: &Graph, counts: &mut HashMap<String, usize>) {
 
 impl Session {
     pub fn load(bytes: &[u8]) -> Result<Session> {
-        let model = proto::parse(bytes)?;
+        let mut model = proto::parse(bytes)?;
         let mut weights = HashMap::new();
         collect_weights(&model.graph, &mut weights)?;
+        fold(&mut model.graph, &mut weights, model.opset);
+        // weights only the folded nodes read are no longer needed
+        let mut used = HashMap::new();
+        reads(&model.graph, &mut used);
+        weights.retain(|k, _| used.contains_key(k));
         Ok(Session { model, weights })
     }
 
@@ -85,6 +90,34 @@ impl Session {
             })
             .collect()
     }
+}
+
+/// Constant folding: a node that reads only weights (dequantizing int8 weights, shape arithmetic
+/// on constants, `Constant`) runs once here, its outputs becoming weights, instead of every run.
+/// A node that fails is simply left for run time, where it reports its error.
+fn fold(g: &mut Graph, weights: &mut HashMap<String, Tensor>, opset: i64) {
+    let mut keep = Vec::with_capacity(g.nodes.len());
+    for n in std::mem::take(&mut g.nodes) {
+        let foldable = n.op != "If" && n.inputs.iter().filter(|i| !i.is_empty()).all(|i| weights.contains_key(i));
+        if foldable {
+            let outs = {
+                let args: Vec<Option<&Tensor>> = n.inputs.iter().map(|i| if i.is_empty() { None } else { weights.get(i) }).collect();
+                op(&n, &args, opset)
+            };
+            if let Ok(outs) = outs
+                && outs.len() >= n.outputs.iter().filter(|o| !o.is_empty()).count()
+            {
+                for (name, t) in n.outputs.iter().zip(outs) {
+                    if !name.is_empty() {
+                        weights.insert(name.clone(), t);
+                    }
+                }
+                continue;
+            }
+        }
+        keep.push(n);
+    }
+    g.nodes = keep;
 }
 
 fn collect_weights(g: &Graph, out: &mut HashMap<String, Tensor>) -> Result<()> {
@@ -167,6 +200,15 @@ fn run_if(n: &Node, scope: &Scope<'_>, opset: i64, cancel: Option<&AtomicBool>) 
     let mut inner = Scope { vals: HashMap::new(), parent: Some(scope), weights: scope.weights };
     run_graph(g, &mut inner, opset, cancel)?;
     g.outputs.iter().map(|o| inner.get(o).cloned().ok_or_else(|| Error::Run(format!("If branch output {o:?}")))).collect()
+}
+
+/// The permutation that swaps the last two axes of a rank-`r` tensor.
+fn swap_last(r: usize) -> Vec<i64> {
+    let mut p: Vec<i64> = (0..r as i64).collect();
+    if r >= 2 {
+        p.swap(r - 1, r - 2);
+    }
+    p
 }
 
 /// An optional input's integer values.
@@ -337,6 +379,94 @@ fn op(n: &Node, a: &[Option<&Tensor>], opset: i64) -> Result<Vec<Tensor>> {
             one(nn::resize(n, x, scales.as_deref(), sizes.as_deref())?)
         }
         "GridSample" => one(nn::grid_sample(n, need(a, 0)?, need(a, 1)?)?),
+        "DequantizeLinear" => {
+            // (x − zero_point) · scale: per tensor, per `axis`, or in blocks of `block_size` along it
+            let x = need(a, 0)?;
+            let sc = need(a, 1)?;
+            let scale = sc.to_f32s();
+            let zp = opt(a, 2).map(Tensor::to_f32s);
+            let xs = x.to_f32s();
+            let ax = crate::tensor::axis(n.int("axis").unwrap_or(1), x.rank().max(1))?;
+            let block = usize::try_from(n.int("block_size").unwrap_or(0)).unwrap_or(0);
+            let v: Vec<f32> = if scale.len() == 1 {
+                let z = zp.as_ref().and_then(|z| z.first().copied()).unwrap_or(0.0);
+                xs.iter().map(|v| (v - z) * scale[0]).collect()
+            } else if block > 0 {
+                if sc.rank() != x.rank() {
+                    return Err(Error::Run("DequantizeLinear blocked scale rank".into()));
+                }
+                let xst = crate::tensor::strides(&x.shape);
+                let sst = crate::tensor::strides(&sc.shape);
+                (0..xs.len())
+                    .map(|i| {
+                        let (mut rem, mut si) = (i, 0usize);
+                        for d in 0..x.rank() {
+                            let c = rem / xst[d];
+                            rem %= xst[d];
+                            let c = if d == ax { c / block } else { c };
+                            si += c.min(sc.shape[d].saturating_sub(1)) * sst[d];
+                        }
+                        let z = zp.as_ref().and_then(|z| z.get(si).copied()).unwrap_or(0.0);
+                        (xs[i] - z) * scale.get(si).copied().unwrap_or(1.0)
+                    })
+                    .collect()
+            } else {
+                let dim = x.shape.get(ax).copied().unwrap_or(1);
+                let inner: usize = x.shape.get(ax + 1..).map_or(1, |s| s.iter().product());
+                if scale.len() != dim {
+                    return Err(Error::Run("DequantizeLinear scale per axis".into()));
+                }
+                xs.iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let c = (i / inner.max(1)) % dim.max(1);
+                        (v - zp.as_ref().and_then(|z| z.get(c).or(z.first())).copied().unwrap_or(0.0)) * scale[c]
+                    })
+                    .collect()
+            };
+            one(Tensor::f32(x.shape.clone(), v)?)
+        }
+        "CumSum" => {
+            let x = need(a, 0)?;
+            let ax = crate::tensor::axis(need(a, 1)?.scalar()? as i64, x.rank())?;
+            let (exclusive, reverse) = (n.int("exclusive").unwrap_or(0) != 0, n.int("reverse").unwrap_or(0) != 0);
+            let dim = x.shape[ax];
+            let inner: usize = x.shape[ax + 1..].iter().product();
+            let outer: usize = x.shape[..ax].iter().product();
+            let src = x.to_f32s();
+            let mut out = vec![0f32; src.len()];
+            for o in 0..outer {
+                for i in 0..inner {
+                    let mut acc = 0f32;
+                    for step in 0..dim {
+                        let j = if reverse { dim - 1 - step } else { step };
+                        let at = (o * dim + j) * inner + i;
+                        let v = src.get(at).copied().unwrap_or(0.0);
+                        if exclusive {
+                            out[at] = acc;
+                            acc += v;
+                        } else {
+                            acc += v;
+                            out[at] = acc;
+                        }
+                    }
+                }
+            }
+            match &x.buf {
+                crate::tensor::Buf::I(_) => one(Tensor::i64(x.shape.clone(), out.iter().map(|v| *v as i64).collect())?),
+                _ => one(Tensor::f32(x.shape.clone(), out)?),
+            }
+        }
+        "Einsum" => {
+            // the forms exports use: a plain or batched matrix product
+            let eq: String = n.string("equation").unwrap_or("").chars().filter(|c| !c.is_whitespace()).collect();
+            let (l, r) = (need(a, 0)?, need(a, 1)?);
+            match eq.as_str() {
+                "ij,jk->ik" | "bij,bjk->bik" | "...ij,...jk->...ik" => one(nn::matmul(l, r)?),
+                "ij,kj->ik" | "bij,bkj->bik" => one(nn::matmul(l, &sh::transpose(r, Some(&swap_last(r.rank())))?)?),
+                other => Err(Error::Unsupported(format!("Einsum {other}"))),
+            }
+        }
         other => Err(Error::Unsupported(format!("operator {other}"))),
     }
 }

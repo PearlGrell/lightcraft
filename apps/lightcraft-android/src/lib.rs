@@ -540,6 +540,12 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeKelvi
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutoutPeople<'l>(mut env: JNIEnv<'l>, _class: JClass<'l>, handle: jlong) {
+    let r = guarded(|| session(handle)?.cutout_people());
+    or_throw(&mut env, r)
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutoutUndo<'l>(
     mut env: JNIEnv<'l>,
     _class: JClass<'l>,

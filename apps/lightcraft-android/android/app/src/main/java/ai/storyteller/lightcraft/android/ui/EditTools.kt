@@ -195,6 +195,9 @@ internal fun HealPanel(vm: LightCraftViewModel) {
                 else -> "Tap what to ${if (h.mode == "fill") "remove" else h.mode}; LightCraft picks the source."
             },
         )
+        if (tap == TapMode.AiRemove) {
+            Toggle("Best quality (slower)", h.best, Modifier.fillMaxWidth()) { vm.setHeal(h.copy(best = it)) }
+        }
         if (tap != TapMode.RedEye) {
             LrSlider("Size", h.size * 100f, 0.5f, 15f, 2.5f, 1, "%", { vm.setHeal(h.copy(size = it / 100f)) }, {}, { vm.setHeal(h.copy(size = 0.025f)) })
         }
@@ -202,6 +205,7 @@ internal fun HealPanel(vm: LightCraftViewModel) {
             SmallButton("Find objects") { vm.findObjects() }
             if (found.isNotEmpty()) SmallButton("Hide ${found.size}") { vm.clearSuggestions() }
             SmallButton("Find dust") { vm.findDust() }
+            SmallButton("Blemishes") { vm.findBlemishes() }
         }
         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (d.spots > 0) SmallButton("Delete spot") { vm.deleteSpot() }
@@ -209,6 +213,16 @@ internal fun HealPanel(vm: LightCraftViewModel) {
             Text("${d.spots} spots", fontSize = 13.sp, color = Lc.muted)
         }
         if (found.isNotEmpty()) Note("Tap a box on the photo to remove that ${found.first().label}.")
+    }
+    val offer by vm.faceModelOffer.collectAsStateWithLifecycle()
+    if (offer) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = vm::dismissFaceModelOffer,
+            title = { Text("Download the face detector?") },
+            text = { Text("Finding blemishes looks for faces first. The detector is YuNet (about 0.2 MB), under the MIT licence — its terms, not LightCraft's. It runs on this phone.") },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = vm::downloadFaceModel) { Text("Download") } },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = vm::dismissFaceModelOffer) { Text("Not now") } },
+        )
     }
 }
 

@@ -4396,6 +4396,7 @@ dependencies = [
 name = "lightcraft-mobile"
 version = "0.21.1"
 dependencies = [
+ "lightcraft-ai",
  "lightcraft-bgremove",
  "lightcraft-codecs",
  "lightcraft-engine",

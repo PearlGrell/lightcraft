@@ -5,6 +5,7 @@
 //! - [`select`]: tap to select an object (EfficientSAM-Ti) → a segmentation grid over the photo.
 //! - [`inpaint`]: fill a hole with generated content (MI-GAN) → the filled pixels.
 //! - [`detect`]: find people and everyday objects (D-FINE-N) → labelled boxes.
+//! - [`matte`]: how much of each pixel is the person (MODNet) → a hair-fine matte.
 //! - [`depth`]: how near each part of the photo is (Depth Anything V2 Small) → a depth grid.
 //!
 //! No model is part of LightCraft: each downloads only when the user asks, and every feature that
@@ -16,6 +17,7 @@ pub mod depth;
 pub mod detect;
 pub mod image;
 pub mod inpaint;
+pub mod matte;
 pub mod models;
 pub mod select;
 pub mod store;

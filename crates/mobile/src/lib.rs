@@ -123,8 +123,10 @@ impl Mobile {
             lightcraft_engine::lens_profiles::use_dir(Some(lens.clone()));
         }
         *self.lens_dir.lock().unwrap_or_else(PoisonError::into_inner) = Some(lens);
-        // the optional AI models beside it too (downloaded only when the user asks)
+        // the optional AI models beside it too (downloaded only when the user asks), and the face
+        // detector Find Blemishes uses
         s.use_ai_models(path.parent().unwrap_or(path).join("models"));
+        s.face_models_dir = Some(path.parent().unwrap_or(path).join("faces"));
         Ok(report)
     }
 
@@ -411,6 +413,20 @@ impl Mobile {
     fn with_cutout<T>(&self, f: impl FnOnce(&mut Cutout) -> Result<T, String>) -> Result<T, String> {
         let mut c = self.cutout();
         f(c.as_mut().ok_or("no background removal in progress")?)
+    }
+
+    /// The cutout's matte from the person matting model (MODNet): hair-fine edges for people.
+    /// The previous matte stays one Undo away.
+    pub fn cutout_people(&self) -> Result<(), String> {
+        let store = self.lock().ai.store.clone().ok_or("this build has no place for AI models")?;
+        self.with_cutout(|c| {
+            let rgb: Vec<u8> = c.frame.rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+            let img = lightcraft_ai::Rgb8::new(c.frame.width as usize, c.frame.height as usize, rgb).map_err(|e| e.to_string())?;
+            let m = lightcraft_ai::matte::matte(&store, &img, None).map_err(|e| e.to_string())?;
+            c.push();
+            c.alpha = m.iter().map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8).collect();
+            Ok(())
+        })
     }
 
     /// Replace the matte with a segmenter's `side × side` foreground probabilities (`invert`: keep the
@@ -836,6 +852,11 @@ mod tests {
         assert!(d["lens_blur"]["depth"]["side"].as_u64().is_some(), "the depth is stored with Lens Blur");
         assert_ne!(m.render(id, 200, 150, false, false).unwrap(), blurred, "depth changes the blur");
         assert_eq!(parse(&m.execute("lensBlur.depth", r#"{"clear": true}"#))["ok"], true);
+        // the person matte for the cutout
+        m.cutout_begin(id, 256).unwrap();
+        m.cutout_people().unwrap();
+        assert!(m.cutout_undo().unwrap(), "the previous matte is one Undo away");
+        m.cutout_end();
         let _ = std::fs::remove_dir_all(&empty);
     }
 

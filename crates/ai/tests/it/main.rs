@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use lightcraft_ai::select::{Selector, Tap};
-use lightcraft_ai::{Rgb8, Status, Store, depth, detect, inpaint, models};
+use lightcraft_ai::{Rgb8, Status, Store, depth, detect, inpaint, matte, models};
 
 fn store(id: &str) -> Option<Store> {
     let Some(dir) = std::env::var_os("LIGHTCRAFT_AI_MODELS") else {
@@ -98,4 +98,35 @@ fn depth_puts_the_floor_near_and_the_sky_far() {
     let g = depth::estimate(&s, &Rgb8::new(w, h, d).unwrap(), 64, None).unwrap();
     let at = |u: f32, v: f32| g[(v * 64.0) as usize * 64 + (u * 64.0) as usize];
     assert!(at(0.5, 0.95) > at(0.5, 0.1), "the bottom of the ground is nearer than the sky");
+}
+
+#[test]
+fn the_best_fill_also_takes_the_colour_of_its_surroundings() {
+    let Some(s) = store(models::INPAINT_BEST) else { return };
+    let img = scene(512, 384);
+    let hole: Vec<bool> = (0..512 * 384)
+        .map(|i| {
+            let (x, y) = (i % 512, i / 512);
+            (360..420).contains(&x) && (160..220).contains(&y)
+        })
+        .collect();
+    let mut punched = img.clone();
+    for (i, h) in hole.iter().enumerate() {
+        if *h {
+            punched.data[i * 3..i * 3 + 3].copy_from_slice(&[255, 255, 255]);
+        }
+    }
+    let out = inpaint::fill_best(&s, &punched, &hole, None).unwrap();
+    let centre = (190 * 512 + 390) * 3;
+    let px = &out.data[centre..centre + 3];
+    assert!(px[1] > px[0] && px[0] < 120, "{px:?}");
+}
+
+#[test]
+fn a_matte_is_one_value_per_pixel_in_range() {
+    let Some(s) = store(models::MATTE) else { return };
+    let img = scene(300, 400);
+    let m = matte::matte(&s, &img, None).unwrap();
+    assert_eq!(m.len(), 300 * 400);
+    assert!(m.iter().all(|v| (0.0..=1.0).contains(v)));
 }

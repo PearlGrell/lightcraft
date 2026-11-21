@@ -98,6 +98,8 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
     fun cutoutMatte(side: Int, probs: FloatArray, invert: Boolean) = nativeCutoutMatte(live(), side, probs, invert)
     fun cutoutErase(x: Float, y: Float, o: EraseSettings): Int =
         nativeCutoutErase(live(), x, y, o.tolerance, o.contiguous, o.sample, o.antiAlias, o.feather, o.opacity)
+    /** The cutout's matte from the person matting model (hair-fine edges for people). */
+    fun cutoutPeople() = nativeCutoutPeople(live())
     fun cutoutUndo(): Boolean = nativeCutoutUndo(live())
     fun cutoutReset() = nativeCutoutReset(live())
     fun cutoutFrame(): Bitmap = bitmap(nativeCutoutFrame(live()))
@@ -151,6 +153,7 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeMaskAspect(handle: Long, photo: Long): Double
         @JvmStatic private external fun nativeAddSegComponent(handle: Long, mask: Long, op: String, side: Int, probs: FloatArray, invert: Boolean): String
         @JvmStatic private external fun nativeKelvinWb(handle: Long, photo: Long): Boolean
+        @JvmStatic private external fun nativeCutoutPeople(handle: Long)
         @JvmStatic private external fun nativeCutoutUndo(handle: Long): Boolean
         @JvmStatic private external fun nativeCutoutReset(handle: Long)
         @JvmStatic private external fun nativeCutoutFrame(handle: Long): IntArray

@@ -192,35 +192,52 @@ pub fn conv(n: &Node, x: &Tensor, w: &Tensor, b: Option<&Tensor>) -> Result<Tens
 }
 
 pub fn conv_transpose(n: &Node, x: &Tensor, w: &Tensor, b: Option<&Tensor>) -> Result<Tensor> {
-    if x.rank() != 4 || w.rank() != 4 {
-        return Err(Error::Unsupported("ConvTranspose of rank other than 4".into()));
-    }
+    let [bn, ci, ih, iw] = x.shape[..] else { return Err(Error::Unsupported("ConvTranspose of rank other than 4".into())) };
+    let [wci, co, kh, kw] = w.shape[..] else { return Err(Error::Run("ConvTranspose weight".into())) };
     let (s, d) = (pair(n.ints("strides"), 1)?, pair(n.ints("dilations"), 1)?);
-    if s.0 != s.1 || d.0 != d.1 || n.int("group").unwrap_or(1) != 1 {
-        return Err(Error::Unsupported("ConvTranspose strides, dilations or groups".into()));
+    if wci != ci || n.int("group").unwrap_or(1) != 1 || s.0 == 0 || s.1 == 0 || d.0 == 0 || d.1 == 0 {
+        return Err(Error::Unsupported("ConvTranspose with groups or a mismatched weight".into()));
     }
     let op = pair(n.ints("output_padding"), 0)?;
-    let p = match n.ints("pads") {
-        None => [0usize; 4],
+    let p: [usize; 4] = match n.ints("pads") {
+        None => [0; 4],
         Some([t, l, b2, r]) if [t, l, b2, r].iter().all(|v| **v >= 0) => [*t as usize, *l as usize, *b2 as usize, *r as usize],
         Some(other) => return Err(Error::Unsupported(format!("ConvTranspose pads {other:?}"))),
     };
-    if !(p[0] == p[2] && p[1] == p[3] && p[0] == p[1] && op.0 == op.1) {
-        return Err(Error::Unsupported("ConvTranspose with uneven pads".into()));
+    let full = |i: usize, k: usize, s: usize, d: usize, o: usize| (i.saturating_sub(1)) * s + (k - 1) * d + 1 + o;
+    let (fh, fw) = (full(ih, kh, s.0, d.0, op.0), full(iw, kw, s.1, d.1, op.1));
+    let (oh, ow) = (fh.saturating_sub(p[0] + p[2]), fw.saturating_sub(p[1] + p[3]));
+    numel(&[bn, co, oh, ow])?;
+    // Wᵀ: [co·kh·kw, ci]
+    let wt = super::shape::transpose(&w.reshaped(vec![ci, co * kh * kw])?, None)?;
+    let xs = x.fs()?;
+    let bias = b.map(|t| t.fs()).transpose()?;
+    let mut out = vec![0f32; bn * co * oh * ow];
+    for bi in 0..bn {
+        let img = xs.get(bi * ci * ih * iw..(bi + 1) * ci * ih * iw).ok_or_else(|| Error::Run("ConvTranspose input size".into()))?;
+        // every input pixel's contribution to every (co, ky, kx): [co·kh·kw, ih·iw]
+        let cols = mm(wt.fs()?, img.to_vec(), 1, co * kh * kw, ci, ih * iw)?;
+        let dst = out.get_mut(bi * co * oh * ow..(bi + 1) * co * oh * ow).ok_or_else(|| Error::Run("ConvTranspose output size".into()))?;
+        dst.par_chunks_mut((oh * ow).max(1)).enumerate().for_each(|(c, plane)| {
+            for ky in 0..kh {
+                for kx in 0..kw {
+                    let Some(row) = cols.get(((c * kh + ky) * kw + kx) * ih * iw..((c * kh + ky) * kw + kx + 1) * ih * iw) else { continue };
+                    for y in 0..ih {
+                        let Some(oy) = (y * s.0 + ky * d.0).checked_sub(p[0]).filter(|v| *v < oh) else { continue };
+                        for xx in 0..iw {
+                            if let Some(ox) = (xx * s.1 + kx * d.1).checked_sub(p[1]).filter(|v| *v < ow) {
+                                plane[oy * ow + ox] += row[y * iw + xx];
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(v) = bias.and_then(|b| b.get(c)) {
+                plane.iter_mut().for_each(|q| *q += v);
+            }
+        });
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let mut y = x.to_candle()?.conv_transpose2d(&w.to_candle()?, p[0], op.0, s.0, d.0)?;
-        if let Some(b) = b {
-            y = y.broadcast_add(&b.to_candle()?.reshape((1, b.len(), 1, 1))?)?;
-        }
-        Tensor::from_candle(&y)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = (b, p, op, s, d);
-        Err(Error::Unsupported("ConvTranspose in the web build".into()))
-    }
+    Tensor::f32(vec![bn, co, oh, ow], out)
 }
 
 /// MatMul with NumPy semantics (1-D operands, broadcast batch dimensions).
@@ -243,7 +260,20 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     let mut out_shape = batch.clone();
     out_shape.extend([m, nn]);
     numel(&out_shape)?;
-    let y = if rb == 2 {
+    // a right side whose batch axes are all 1 is one matrix for every left row: a single 2-D product
+    if rb > 2 && b2.shape[..rb - 2].iter().all(|d| *d == 1) {
+        b2 = b2.reshaped(vec![k2, nn])?;
+    }
+    let rb = b2.rank();
+    let y = if ra == 2 && rb > 2 {
+        // one left matrix for a batch of right ones (a DFT matrix over many rows): put the batch
+        // side by side, [k, batch·n], and do a single product
+        let bn: usize = b2.shape[..rb - 2].iter().product();
+        let cols = super::shape::transpose(&b2.reshaped(vec![bn, k2, nn])?, Some(&[1, 0, 2]))?;
+        let p = mm(a2.fs()?, cols.fs()?.to_vec(), 1, m, k, bn * nn)?;
+        let back = super::shape::transpose(&Tensor::f32(vec![m, bn, nn], p)?, Some(&[1, 0, 2]))?;
+        back.reshaped(out_shape.clone())?
+    } else if rb == 2 {
         // the common case: [..., m, k] × [k, n] as one 2-D product
         let rows: usize = a2.shape[..ra - 1].iter().product();
         let p = mm(a2.fs()?, b2.fs()?.to_vec(), 1, rows, k, nn)?;
