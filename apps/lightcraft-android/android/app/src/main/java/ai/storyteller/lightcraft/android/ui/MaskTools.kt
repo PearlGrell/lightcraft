@@ -101,7 +101,13 @@ internal fun MaskCanvas(vm: LightCraftViewModel, map: ViewMap) {
     val masks by vm.masks.collectAsStateWithLifecycle()
     val active by vm.activeMask.collectAsStateWithLifecycle()
     val brush by vm.brush.collectAsStateWithLifecycle()
-    val mask = masks.firstOrNull { it.id == active } ?: return
+    val armed by vm.objectArmed.collectAsStateWithLifecycle()
+    val mask = masks.firstOrNull { it.id == active }
+    if (armed || mask?.kind == "object") {
+        ObjectTapLayer(vm, map)
+        return
+    }
+    mask ?: return
     val shape = mask.shape ?: return
     val density = LocalDensity.current
     val grab = with(density) { 30.dp.toPx() }
@@ -217,6 +223,31 @@ internal fun MaskCanvas(vm: LightCraftViewModel, map: ViewMap) {
             }
         }
     }
+}
+
+/** Object selection: a tap starts one (when armed) or adds to / leaves out of the active Object mask. */
+@Composable
+private fun ObjectTapLayer(vm: LightCraftViewModel, map: ViewMap) {
+    val m by rememberUpdatedState(map)
+    Box(
+        Modifier.fillMaxSize().pointerInput(Unit) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                var moved = false
+                while (true) {
+                    val ev = awaitPointerEvent()
+                    if (ev.changes.size > 1) moved = true
+                    val c = ev.changes.firstOrNull { it.id == down.id } ?: break
+                    if ((c.position - down.position).getDistance() > 24f) moved = true
+                    if (!c.pressed) break
+                }
+                if (!moved) {
+                    val p = m.toUv(down.position)
+                    if (p.x in 0f..1f && p.y in 0f..1f) vm.objectTap(p.x, p.y)
+                }
+            }
+        },
+    )
 }
 
 /** A screen point as the mask's coordinates, or null where the engine can't place it. */
@@ -364,7 +395,7 @@ internal fun MaskPanel(vm: LightCraftViewModel) {
     Column(Modifier.fillMaxWidth()) {
         if (masks.isEmpty()) {
             Text(
-                "Pick Subject, Background or Sky to select it with on-device AI; paint with Brush; add a Linear or Radial gradient; or select by Color or Luminance.",
+                "Tap Object and then the thing to select; pick Subject, Background or Sky; paint with Brush; add a Linear or Radial gradient; or select by Color or Luminance.",
                 fontSize = 13.sp,
                 color = Lc.label,
                 textAlign = TextAlign.Center,
@@ -431,6 +462,11 @@ internal fun MaskPanel(vm: LightCraftViewModel) {
                     LrSlider("Size", brush.size * 100f, 0.5f, 30f, 4f, 1, "%", { vm.setBrush(brush.copy(size = it / 100f)) }, {}, { vm.setBrush(brush.copy(size = 0.04f)) })
                     LrSlider("Feather", brush.feather, 0f, 100f, 50f, 0, "", { vm.setBrush(brush.copy(feather = it)) }, {}, { vm.setBrush(brush.copy(feather = 50f)) })
                     LrSlider("Flow", brush.flow, 1f, 100f, 100f, 0, "", { vm.setBrush(brush.copy(flow = it)) }, {}, { vm.setBrush(brush.copy(flow = 100f)) })
+                }
+                "object" -> {
+                    val include by vm.objectInclude.collectAsStateWithLifecycle()
+                    Hint("Tap the photo to add more of the object, or switch to Leave out and tap what to take away.")
+                    Chips(listOf("add" to "Add", "out" to "Leave out"), if (include) "add" else "out") { vm.setObjectInclude(it == "add") }
                 }
                 "radial" -> Hint("Drag the centre to move it, the edge handles to resize.")
                 "linear" -> Hint("Drag an end to set where the gradient starts and ends, the middle to move it.")

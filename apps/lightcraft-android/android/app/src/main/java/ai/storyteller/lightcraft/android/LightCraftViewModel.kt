@@ -154,9 +154,10 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     /** A tap on the shown photo (0..1) with a picker on: the engine command for it, in photo coordinates. */
     fun tapPhoto(u: Float, v: Float) {
         val mode = _tapMode.value
-        if (mode == TapMode.None) return
+        if (mode == TapMode.None || mode == TapMode.AiRemove) return
         viewModelScope.launch(commands) {
-            val p = viewToMask(null, floatArrayOf(u, v))
+            // white balance and Point Color sample the photo as shot; spots and red eye live in the corrected frame
+            val p = if (mode == TapMode.Heal || mode == TapMode.RedEye) viewToImage(floatArrayOf(u, v)) else viewToMask(null, floatArrayOf(u, v))
             if (p.size < 2) return@launch
             val x = p[0].toDouble()
             val y = p[1].toDouble()
@@ -169,7 +170,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                         e.execute("spot.add", JSONObject().put("mode", h.mode).put("points", JSONArray().put(JSONArray().put(x).put(y))).put("size", h.size.toDouble()))
                     }
                     TapMode.RedEye -> e.execute("redeye.add", JSONObject().put("center", JSONArray().put(x).put(y)).put("rx", 0.02).put("ry", 0.02))
-                    TapMode.None -> {}
+                    TapMode.None, TapMode.AiRemove -> {}
                 }
             }
             // the white balance picker is one tap; the others stay on for more
@@ -589,6 +590,11 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     private fun addMask(kind: String) {
         viewModelScope.launch(commands) {
             when (kind) {
+                "object" -> {
+                    _objectArmed.value = true
+                    messages.trySend("Tap the object to select it")
+                    return@launch
+                }
                 "subject" -> subjectMask("Subject", invert = false)
                 "background" -> subjectMask("Background", invert = true)
                 "sky" -> withEngine { e -> e.execute("mask.add", JSONObject().put("kind", "sky").put("name", "Sky")) }
@@ -680,6 +686,177 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         val photo = _editing.value ?: return FloatArray(0)
         val e = engine ?: return FloatArray(0)
         return runCatching { e.viewToMask(photo, mask?.toLong() ?: -1L, uv) }.getOrElse { FloatArray(0) }
+    }
+
+    /** View points (0..1 on the shown photo) → the corrected frame (spots, red eye). */
+    fun viewToImage(uv: FloatArray): FloatArray {
+        val photo = _editing.value ?: return FloatArray(0)
+        val e = engine ?: return FloatArray(0)
+        return runCatching { e.viewToImage(photo, uv) }.getOrElse { FloatArray(0) }
+    }
+
+    // ---- AI models -------------------------------------------------------------------------------
+
+    private val _aiModels = MutableStateFlow<List<AiModel>>(emptyList())
+    /** The optional on-device models and their downloads. */
+    val aiModels: StateFlow<List<AiModel>> = _aiModels.asStateFlow()
+
+    /** Read the models' state; while one downloads, check again every second. */
+    fun loadAiModels() {
+        viewModelScope.launch(commands) {
+            val r = runCatching { engine?.execute("ai.models") as? JSONObject }.getOrNull() ?: return@launch
+            val list = r.optJSONArray("models") ?: return@launch
+            _aiModels.value = (0 until list.length()).mapNotNull { i ->
+                list.optJSONObject(i)?.let { m ->
+                    val d = m.optJSONObject("download")
+                    AiModel(
+                        id = m.optString("id"), name = m.optString("name"), purpose = m.optString("purpose"), size = m.optLong("size"),
+                        licence = m.optString("licence"), source = m.optString("source"), ready = m.optBoolean("ready"),
+                        downloading = d?.optString("state") == "running", done = d?.optLong("done") ?: 0, total = d?.optLong("total") ?: 0,
+                        error = d?.takeIf { it.optString("state") == "failed" }?.optString("error", "") ?: "",
+                    )
+                }
+            }
+            if (_aiModels.value.any { it.downloading }) {
+                kotlinx.coroutines.delay(1000)
+                loadAiModels()
+            }
+        }
+    }
+
+    /** Download model [id]: only after the user agreed to its licence in the dialog. */
+    fun downloadAiModel(id: String) {
+        viewModelScope.launch(commands) {
+            withEngine { e -> e.execute("ai.download", JSONObject().put("id", id).put("acknowledged", true)) }
+        }
+        loadAiModels()
+    }
+
+    fun cancelAiDownload() {
+        viewModelScope.launch(commands) { withEngine { e -> e.execute("ai.cancelDownload") } }
+        loadAiModels()
+    }
+
+    fun removeAiModel(id: String) {
+        viewModelScope.launch(commands) { withEngine { e -> e.execute("ai.removeModel", JSONObject().put("id", id)) } }
+        loadAiModels()
+    }
+
+    /** Run an AI command with the busy spinner; a missing model points to where it downloads. */
+    private fun aiCommand(id: String, params: JSONObject, then: (Any?) -> Unit = {}) {
+        viewModelScope.launch(commands) {
+            _busy.value = true
+            try {
+                val e = engine ?: return@launch
+                val r = try {
+                    e.execute(id, params)
+                } catch (t: EngineException) {
+                    val m = t.message ?: t.kind
+                    messages.trySend(if (m.contains("isn't downloaded")) "$m. Get it in ⋮ → AI models." else m)
+                    return@launch
+                }
+                then(r)
+                afterEdit()
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
+
+    private val _objectArmed = MutableStateFlow(false)
+    /** The next tap on the photo starts an Object selection. */
+    val objectArmed: StateFlow<Boolean> = _objectArmed.asStateFlow()
+
+    private val _objectInclude = MutableStateFlow(true)
+    /** Taps on an Object mask add to it (true) or leave out (false). */
+    val objectInclude: StateFlow<Boolean> = _objectInclude.asStateFlow()
+
+    fun setObjectInclude(on: Boolean) {
+        _objectInclude.value = on
+    }
+
+    /** A tap on the photo for Object selection: a new mask when armed, else refines the active Object mask. */
+    fun objectTap(u: Float, v: Float) {
+        val pt = viewToMask(null, floatArrayOf(u, v)).takeIf { it.size >= 2 } ?: return
+        val active = _masks.value.firstOrNull { it.id == _activeMask.value }
+        if (_objectArmed.value || active?.kind != "object") {
+            _objectArmed.value = false
+            aiCommand("ai.select", JSONObject().put("taps", JSONArray().put(JSONArray().put(pt[0].toDouble()).put(pt[1].toDouble()).put(true))))
+            return
+        }
+        val taps = JSONArray()
+        fun add(arr: org.json.JSONArray?, include: Boolean) {
+            for (i in 0 until (arr?.length() ?: 0)) arr?.optJSONObject(i)?.let { taps.put(JSONArray().put(it.optDouble("x")).put(it.optDouble("y")).put(include)) }
+        }
+        add(active.shape?.optJSONArray("hint"), true)
+        add(active.shape?.optJSONArray("exclude"), false)
+        taps.put(JSONArray().put(pt[0].toDouble()).put(pt[1].toDouble()).put(_objectInclude.value))
+        aiCommand("ai.select", JSONObject().put("id", active.id).put("taps", taps))
+    }
+
+    /** One AI Remove stroke (points on the shown photo): its area is replaced with generated content. */
+    fun generativeStroke(uv: FloatArray) {
+        if (uv.size < 2) return
+        val pts = viewToImage(uv)
+        if (pts.size < 2) return
+        val points = JSONArray()
+        for (i in 0 until pts.size / 2) points.put(JSONArray().put(pts[2 * i].toDouble()).put(pts[2 * i + 1].toDouble()))
+        aiCommand("spot.generate", JSONObject().put("points", points).put("size", _heal.value.size.toDouble()))
+    }
+
+    private val _suggestions = MutableStateFlow<List<Suggestion>>(emptyList())
+    /** What Find objects found, shown as boxes on the photo. */
+    val suggestions: StateFlow<List<Suggestion>> = _suggestions.asStateFlow()
+
+    fun findObjects() {
+        aiCommand("ai.detect", JSONObject().put("min", 0.45)) { r ->
+            val objs = (r as? JSONObject)?.optJSONArray("objects")
+            _suggestions.value = (0 until (objs?.length() ?: 0)).mapNotNull { i ->
+                objs?.optJSONObject(i)?.let { o ->
+                    val b = o.optJSONArray("box") ?: return@let null
+                    Suggestion(o.optString("label"), o.optDouble("score").toFloat(), b.optDouble(0).toFloat(), b.optDouble(1).toFloat(), b.optDouble(2).toFloat(), b.optDouble(3).toFloat())
+                }
+            }
+            if (_suggestions.value.isEmpty()) messages.trySend("Nothing found to suggest")
+        }
+    }
+
+    fun clearSuggestions() {
+        _suggestions.value = emptyList()
+    }
+
+    /**
+     * Remove suggestion [s]: a generative remove over its box, as a stroke along the box's middle
+     * ([viewW] × [viewH] = the shown photo's size, for the stroke's width).
+     */
+    fun removeSuggestion(s: Suggestion, viewW: Float, viewH: Float) {
+        _suggestions.value = _suggestions.value - s
+        // the box's corners on the shown photo (it is in photo-as-shot coordinates)
+        val v = maskToView(null, floatArrayOf(s.x0, s.y0, s.x1, s.y1))
+        if (v.size < 4 || v.any { !it.isFinite() }) return
+        val (x0, y0, x1, y1) = listOf(minOf(v[0], v[2]), minOf(v[1], v[3]), maxOf(v[0], v[2]), maxOf(v[1], v[3]))
+        val (bw, bh) = ((x1 - x0) * viewW) to ((y1 - y0) * viewH)
+        val long = maxOf(viewW, viewH).coerceAtLeast(1f)
+        val radius = minOf(bw, bh) / 2f * 1.15f
+        val size = (radius / long).coerceIn(0.005f, 0.25f)
+        // centres along the box's longer side, a radius apart
+        val uv = mutableListOf<Float>()
+        val steps = (maxOf(bw, bh) / radius.coerceAtLeast(1f)).toInt().coerceIn(1, 24)
+        for (i in 0..steps) {
+            val t = i / steps.toFloat()
+            val (cx, cy) = if (bw >= bh) {
+                (x0 + (x1 - x0) * (0.5f / steps + t * (1 - 1f / steps))) to ((y0 + y1) / 2)
+            } else {
+                ((x0 + x1) / 2) to (y0 + (y1 - y0) * (0.5f / steps + t * (1 - 1f / steps)))
+            }
+            uv += cx
+            uv += cy
+        }
+        val pts = viewToImage(uv.toFloatArray())
+        if (pts.size < 2) return
+        val points = JSONArray()
+        for (i in 0 until pts.size / 2) points.put(JSONArray().put(pts[2 * i].toDouble()).put(pts[2 * i + 1].toDouble()))
+        aiCommand("spot.generate", JSONObject().put("points", points).put("size", size.toDouble()))
     }
 
     /** Mask coordinates → the shown photo (0..1); NaN where a point has no place. */

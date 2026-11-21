@@ -63,6 +63,9 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
      */
     fun viewToMask(photo: Long, mask: Long, points: FloatArray): FloatArray = nativeViewToMask(live(), photo, mask, points)
 
+    /** Points on the shown photo (0..1) in the corrected frame: where spots and red-eye fixes are stored. */
+    fun viewToImage(photo: Long, points: FloatArray): FloatArray = nativeViewToImage(live(), photo, points)
+
     /** Mask coordinates → the shown photo (0..1); NaN for a point that has no place in it. */
     fun maskToView(photo: Long, mask: Long, points: FloatArray): FloatArray = nativeMaskToView(live(), photo, mask, points)
 
@@ -142,6 +145,7 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeCutoutMatte(handle: Long, side: Int, probs: FloatArray, invert: Boolean)
         @JvmStatic private external fun nativeCutoutErase(handle: Long, x: Float, y: Float, tolerance: Float, contiguous: Boolean, sample: Int, antiAlias: Boolean, feather: Float, opacity: Float): Int
         @JvmStatic private external fun nativeRenderMasked(handle: Long, photo: Long, maxW: Int, maxH: Int, mask: Long, draft: Boolean): IntArray
+        @JvmStatic private external fun nativeViewToImage(handle: Long, photo: Long, points: FloatArray): FloatArray
         @JvmStatic private external fun nativeViewToMask(handle: Long, photo: Long, mask: Long, points: FloatArray): FloatArray
         @JvmStatic private external fun nativeMaskToView(handle: Long, photo: Long, mask: Long, points: FloatArray): FloatArray
         @JvmStatic private external fun nativeMaskAspect(handle: Long, photo: Long): Double

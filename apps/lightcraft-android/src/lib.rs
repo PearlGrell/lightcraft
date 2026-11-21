@@ -484,6 +484,27 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeMaskA
     or_throw(&mut env, r)
 }
 
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeViewToImage<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    points: JFloatArray<'l>,
+) -> jfloatArray {
+    let r = guarded(|| {
+        let pts = pairs(&floats(&mut env, &points)?);
+        session(handle)?.view_to_image(photo_id(photo)?, &pts)
+    });
+    match r {
+        Ok(v) => float_array(&mut env, &v.iter().flat_map(|p| [p[0] as f32, p[1] as f32]).collect::<Vec<_>>()),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Mask coordinates → view (0..1); a point that has no place in the view comes back as NaN, NaN.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeMaskToView<'l>(

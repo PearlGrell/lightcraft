@@ -43,12 +43,41 @@ fn pads2(n: &Node, ih: usize, iw: usize, k: (usize, usize), s: (usize, usize), d
 /// Elements one im2col tile may hold (64 MB of f32): big layers run in bands of output rows.
 const COL_BUDGET: usize = 16 * 1024 * 1024;
 
-/// `w [m, k] × col [k, n]` on candle's multi-threaded gemm.
+/// `batch` products `a [m, k] × b [k, n]` (row-major, batches back to back): candle's
+/// multi-threaded gemm natively, plain loops on the web (which runs no models).
+fn mm(a: &[f32], b: Vec<f32>, batch: usize, m: usize, k: usize, n: usize) -> Result<Vec<f32>> {
+    if a.len() != batch * m * k || b.len() != batch * k * n {
+        return Err(Error::Run("matrix product sizes".into()));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let dev = candle_core::Device::Cpu;
+        let ta = candle_core::Tensor::from_slice(a, (batch, m, k), &dev)?;
+        let tb = candle_core::Tensor::from_vec(b, (batch, k, n), &dev)?;
+        Ok(ta.matmul(&tb)?.flatten_all()?.to_vec1::<f32>()?)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut out = vec![0f32; batch * m * n];
+        for bi in 0..batch {
+            for i in 0..m {
+                for p in 0..k {
+                    let av = a[(bi * m + i) * k + p];
+                    let row = &b[(bi * k + p) * n..(bi * k + p + 1) * n];
+                    let dst = &mut out[(bi * m + i) * n..(bi * m + i + 1) * n];
+                    for (d, bv) in dst.iter_mut().zip(row) {
+                        *d += av * bv;
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `w [m, k] × col [k, n]`.
 fn gemm_mm(w: &[f32], m: usize, k: usize, col: Vec<f32>, n: usize) -> Result<Vec<f32>> {
-    let dev = candle_core::Device::Cpu;
-    let a = candle_core::Tensor::from_slice(w, (m, k), &dev)?;
-    let b = candle_core::Tensor::from_vec(col, (k, n), &dev)?;
-    Ok(a.matmul(&b)?.flatten_all()?.to_vec1::<f32>()?)
+    mm(w, col, 1, m, k, n)
 }
 
 pub fn conv(n: &Node, x: &Tensor, w: &Tensor, b: Option<&Tensor>) -> Result<Tensor> {
@@ -179,11 +208,19 @@ pub fn conv_transpose(n: &Node, x: &Tensor, w: &Tensor, b: Option<&Tensor>) -> R
     if !(p[0] == p[2] && p[1] == p[3] && p[0] == p[1] && op.0 == op.1) {
         return Err(Error::Unsupported("ConvTranspose with uneven pads".into()));
     }
-    let mut y = x.to_candle()?.conv_transpose2d(&w.to_candle()?, p[0], op.0, s.0, d.0)?;
-    if let Some(b) = b {
-        y = y.broadcast_add(&b.to_candle()?.reshape((1, b.len(), 1, 1))?)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut y = x.to_candle()?.conv_transpose2d(&w.to_candle()?, p[0], op.0, s.0, d.0)?;
+        if let Some(b) = b {
+            y = y.broadcast_add(&b.to_candle()?.reshape((1, b.len(), 1, 1))?)?;
+        }
+        Tensor::from_candle(&y)
     }
-    Tensor::from_candle(&y)
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (b, p, op, s, d);
+        Err(Error::Unsupported("ConvTranspose in the web build".into()))
+    }
 }
 
 /// MatMul with NumPy semantics (1-D operands, broadcast batch dimensions).
@@ -209,11 +246,10 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     let y = if rb == 2 {
         // the common case: [..., m, k] × [k, n] as one 2-D product
         let rows: usize = a2.shape[..ra - 1].iter().product();
-        let lhs = a2.reshaped(vec![rows, k])?.to_candle()?;
-        let p = lhs.matmul(&b2.to_candle()?)?;
+        let p = mm(a2.fs()?, b2.fs()?.to_vec(), 1, rows, k, nn)?;
         let mut s = a2.shape[..ra - 1].to_vec();
         s.push(nn);
-        Tensor::from_candle(&p)?.reshaped(s)?
+        Tensor::f32(s, p)?
     } else {
         let mut sa = batch.clone();
         sa.extend([m, k]);
@@ -222,8 +258,8 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
         let ea = if a2.shape == sa { a2.clone() } else { super::shape::expand(&a2, &sa.iter().map(|d| *d as i64).collect::<Vec<_>>())? };
         let eb = if b2.shape == sb { b2.clone() } else { super::shape::expand(&b2, &sb.iter().map(|d| *d as i64).collect::<Vec<_>>())? };
         let bn: usize = batch.iter().product();
-        let p = ea.reshaped(vec![bn, m, k])?.to_candle()?.matmul(&eb.reshaped(vec![bn, k, nn])?.to_candle()?)?;
-        Tensor::from_candle(&p)?.reshaped(out_shape.clone())?
+        let p = mm(ea.fs()?, eb.fs()?.to_vec(), bn, m, k, nn)?;
+        Tensor::f32(out_shape.clone(), p)?
     };
     let mut s = y.shape.clone();
     if vb {

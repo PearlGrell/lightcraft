@@ -35,7 +35,7 @@ import ai.storyteller.lightcraft.android.ExportSettings
 import ai.storyteller.lightcraft.android.LightCraftViewModel
 
 /** Which workflow dialog is open from the editor's ⋮ menu. */
-private enum class Dialog { None, History, Versions, Preset, Export }
+private enum class Dialog { None, History, Versions, Preset, Export, Models }
 
 /**
  * The editor's ⋮ menu: History, Versions, Copy / Paste Settings, Save as Preset and Export with
@@ -56,6 +56,8 @@ internal fun WorkflowMenu(vm: LightCraftViewModel) {
             DropdownMenuItem(text = { Text("Save as preset…") }, onClick = { menu = false; dialog = Dialog.Preset })
             HorizontalDivider()
             DropdownMenuItem(text = { Text("Export…") }, onClick = { menu = false; dialog = Dialog.Export })
+            HorizontalDivider()
+            DropdownMenuItem(text = { Text("AI models…") }, onClick = { menu = false; vm.loadAiModels(); dialog = Dialog.Models })
         }
     }
     when (dialog) {
@@ -63,6 +65,7 @@ internal fun WorkflowMenu(vm: LightCraftViewModel) {
         Dialog.Versions -> VersionsDialog(vm) { dialog = Dialog.None }
         Dialog.Preset -> NameDialog("Save as preset", "Preset name", "", "Save", { vm.savePreset(it) }) { dialog = Dialog.None }
         Dialog.Export -> ExportDialog(vm) { dialog = Dialog.None }
+        Dialog.Models -> ModelsDialog(vm) { dialog = Dialog.None }
         Dialog.None -> {}
     }
 }
@@ -179,6 +182,68 @@ private fun ExportDialog(vm: LightCraftViewModel, onClose: () -> Unit) {
         },
         dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
     )
+}
+
+/**
+ * The optional on-device AI models: what each does, its size and licence, and Download (after
+ * the user agrees to its licence), progress with Cancel, or Delete.
+ */
+@Composable
+private fun ModelsDialog(vm: LightCraftViewModel, onClose: () -> Unit) {
+    val models by vm.aiModels.collectAsStateWithLifecycle()
+    var confirm by remember { mutableStateOf<ai.storyteller.lightcraft.android.AiModel?>(null) }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("AI models") },
+        text = {
+            Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+                Text(
+                    "Optional, downloaded only when you choose; they run on this phone and nothing leaves it.",
+                    fontSize = 13.sp,
+                    color = Lc.label,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                models.forEach { m ->
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Text("${m.name} — ${m.purpose}", fontSize = 15.sp, color = Lc.text)
+                        Text("${m.size / 1_000_000} MB · ${m.licence}", fontSize = 12.sp, color = Lc.muted)
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            when {
+                                m.downloading -> {
+                                    val pct = if (m.total > 0) (m.done * 100 / m.total).toInt() else 0
+                                    Text("Downloading $pct%", fontSize = 13.sp, color = Lc.accent, modifier = Modifier.weight(1f))
+                                    TextButton(onClick = { vm.cancelAiDownload() }) { Text("Cancel") }
+                                }
+                                m.ready -> {
+                                    Text("Ready", fontSize = 13.sp, color = Lc.label, modifier = Modifier.weight(1f))
+                                    TextButton(onClick = { vm.removeAiModel(m.id) }) { Text("Delete", color = Color(0xFFFF6B6B)) }
+                                }
+                                else -> {
+                                    Text(if (m.error.isNotEmpty()) "Failed: ${m.error}" else "Not downloaded", fontSize = 13.sp, color = Lc.muted, modifier = Modifier.weight(1f))
+                                    TextButton(onClick = { confirm = m }) { Text("Download") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("Done") } },
+    )
+    confirm?.let { m ->
+        AlertDialog(
+            onDismissRequest = { confirm = null },
+            title = { Text("Download ${m.name}?") },
+            text = { Text("${m.purpose}. About ${m.size / 1_000_000} MB.\n\nSource: ${m.source}.\nLicence: ${m.licence} — its terms, not LightCraft's. Downloading it means accepting them.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.downloadAiModel(m.id)
+                    confirm = null
+                }) { Text("Download") }
+            },
+            dismissButton = { TextButton(onClick = { confirm = null }) { Text("Not now") } },
+        )
+    }
 }
 
 @Composable

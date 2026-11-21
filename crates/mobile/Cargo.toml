@@ -8,6 +8,9 @@ description = "LightCraft for phones (L5): a thread-safe handle over the engine 
 [lints]
 workspace = true
 
+[dev-dependencies]
+lightcraft-testkit = { workspace = true }
+
 [dependencies]
 lightcraft-engine = { workspace = true }
 lightcraft-raster = { workspace = true }

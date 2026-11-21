@@ -5,6 +5,7 @@
 //! `edit.*` (undo/redo), and queries (`catalog.query`, `photo.inspect`, `develop.get`…).
 
 mod activity;
+pub mod ai;
 mod before;
 pub(crate) mod browse;
 mod color;
@@ -173,6 +174,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(missing::specs());
         v.extend(recheck::specs());
         v.extend(lens_refresh::specs());
+        v.extend(ai::specs());
         v.extend(sync::specs());
         v.extend(metadata::specs());
         v.extend(geocode::specs());

@@ -157,7 +157,25 @@ enum class MainTab(val label: String) { Quick("Quick edit"), Presets("Presets"),
 enum class ToolKind { Sliders, Action, Curve, LensBlur, Profile, Heal }
 
 /** What a tap on the photo does in the Edit tab (one picker at a time). */
-enum class TapMode { None, WhiteBalance, PointColor, Heal, RedEye }
+enum class TapMode { None, WhiteBalance, PointColor, Heal, RedEye, AiRemove }
+
+/** An optional on-device AI model (`ai.models`) and its download. */
+data class AiModel(
+    val id: String,
+    val name: String,
+    val purpose: String,
+    val size: Long,
+    val licence: String,
+    val source: String,
+    val ready: Boolean,
+    val downloading: Boolean = false,
+    val done: Long = 0,
+    val total: Long = 0,
+    val error: String = "",
+)
+
+/** A person or object the detector found: its label, confidence and box (0..1 on the photo as shot). */
+data class Suggestion(val label: String, val score: Float, val x0: Float, val y0: Float, val x1: Float, val y1: Float)
 
 /** The develop state the switches and pickers show (`develop.get`). */
 data class DevelopState(
@@ -305,12 +323,13 @@ object Tools {
     val uprightModes = listOf("off" to "Off", "auto" to "Auto", "level" to "Level", "vertical" to "Vertical", "full" to "Full")
 
     /** Healing modes (`spot.add`). */
-    val healModes = listOf("heal" to "Heal", "clone" to "Clone", "fill" to "Remove")
+    val healModes = listOf("heal" to "Heal", "clone" to "Clone", "fill" to "Remove", "ai" to "AI Remove")
 
     /** Lens Blur's in-focus area when no mask sets it (`lens_blur.shape`). */
     val blurShapes = listOf("auto" to "Subject", "round" to "Round", "wide" to "Wide", "tall" to "Tall")
 
     val masking = listOf(
+        Tool("object", "Object", ToolKind.Action),
         Tool("subject", "Subject", ToolKind.Action),
         Tool("background", "Background", ToolKind.Action),
         Tool("sky", "Sky", ToolKind.Action),

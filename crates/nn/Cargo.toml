@@ -9,10 +9,14 @@ description = "LightCraft's ONNX runner (L1): reads a model file (bounded, hosti
 workspace = true
 
 [dependencies]
-candle-core = { workspace = true }
 half = "2"
 rayon = { workspace = true }
 thiserror = { workspace = true }
+
+# candle's gemm and transposed convolution natively; the web build (which runs no models) uses
+# plain loops and leaves candle, which needs a random source wasm32 lacks, out
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+candle-core = { workspace = true }
 
 [dev-dependencies]
 lightcraft-testkit = { workspace = true }

@@ -208,6 +208,7 @@ impl Tensor {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn to_candle(&self) -> Result<candle_core::Tensor> {
         let dev = candle_core::Device::Cpu;
         Ok(match &self.buf {
@@ -220,6 +221,7 @@ impl Tensor {
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_candle(t: &candle_core::Tensor) -> Result<Tensor> {
         let shape = t.dims().to_vec();
         let flat = t.flatten_all()?;

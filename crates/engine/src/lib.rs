@@ -293,6 +293,8 @@ pub struct Session {
     pub face_downloads: face_download::Downloads,
     /// The lens database download ([`lensfun_download`]).
     pub lensfun: lensfun_download::Download,
+    /// The optional on-device AI models (`ai.*`, [`Session::use_ai_models`]).
+    pub ai: cmd::ai::AiState,
     /// The host may offer the lens database at its start, and fetch it after the user's yes
     /// ([`Session::with_lens_auto_download`]; when: [`lensfun_download::fetch_on_start`]).
     pub lens_auto_download: bool,
@@ -499,6 +501,7 @@ impl Session {
             face_models_dir: None,
             face_downloads: Default::default(),
             lensfun: Default::default(),
+            ai: Default::default(),
             lens_auto_download: false,
             place_names: Default::default(),
             face_catalog: Default::default(),

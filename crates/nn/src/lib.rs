@@ -28,6 +28,7 @@ pub enum Error {
     Run(String),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl From<candle_core::Error> for Error {
     fn from(e: candle_core::Error) -> Self {
         Error::Run(e.to_string())

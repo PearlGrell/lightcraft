@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -164,36 +165,99 @@ internal fun ProfilePanel(vm: LightCraftViewModel, all: List<Control>) {
     }
 }
 
-/** Heal: tap a blemish to heal, clone or remove it; red eye; find sensor dust. */
+/** Heal: tap a blemish to heal, clone or remove it; AI Remove; red eye; find sensor dust or objects. */
 @Composable
 internal fun HealPanel(vm: LightCraftViewModel) {
     val h by vm.heal.collectAsStateWithLifecycle()
     val tap by vm.tapMode.collectAsStateWithLifecycle()
     val d by vm.develop.collectAsStateWithLifecycle()
+    val found by vm.suggestions.collectAsStateWithLifecycle()
+    val selected = when (tap) {
+        TapMode.RedEye -> "redeye"
+        TapMode.AiRemove -> "ai"
+        else -> h.mode
+    }
     Column(Modifier.fillMaxWidth().heightIn(max = 230.dp).verticalScroll(rememberScrollState()).padding(horizontal = 22.dp, vertical = 6.dp)) {
-        Chips(Tools.healModes + ("redeye" to "Red Eye"), if (tap == TapMode.RedEye) "redeye" else h.mode) {
-            if (it == "redeye") {
-                vm.setTapMode(TapMode.RedEye)
-            } else {
-                vm.setHeal(h.copy(mode = it))
-                if (tap != TapMode.Heal) vm.setTapMode(TapMode.Heal)
+        Chips(Tools.healModes + ("redeye" to "Red Eye"), selected) {
+            when (it) {
+                "redeye" -> if (tap != TapMode.RedEye) vm.setTapMode(TapMode.RedEye)
+                "ai" -> if (tap != TapMode.AiRemove) vm.setTapMode(TapMode.AiRemove)
+                else -> {
+                    vm.setHeal(h.copy(mode = it))
+                    if (tap != TapMode.Heal) vm.setTapMode(TapMode.Heal)
+                }
             }
         }
         Note(
-            if (tap == TapMode.RedEye) {
-                "Tap the centre of each red eye."
-            } else {
-                "Tap what to ${if (h.mode == "fill") "remove" else h.mode}; LightCraft picks the source."
+            when (tap) {
+                TapMode.RedEye -> "Tap the centre of each red eye."
+                TapMode.AiRemove -> "Brush over what to remove; it is replaced with generated content (on the phone, a few seconds)."
+                else -> "Tap what to ${if (h.mode == "fill") "remove" else h.mode}; LightCraft picks the source."
             },
         )
         if (tap != TapMode.RedEye) {
             LrSlider("Size", h.size * 100f, 0.5f, 15f, 2.5f, 1, "%", { vm.setHeal(h.copy(size = it / 100f)) }, {}, { vm.setHeal(h.copy(size = 0.025f)) })
         }
         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            SmallButton("Find objects") { vm.findObjects() }
+            if (found.isNotEmpty()) SmallButton("Hide ${found.size}") { vm.clearSuggestions() }
             SmallButton("Find dust") { vm.findDust() }
+        }
+        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (d.spots > 0) SmallButton("Delete spot") { vm.deleteSpot() }
             if (d.redEyes > 0) SmallButton("Undo red eye") { vm.deleteRedEye(d.redEyes - 1) }
             Text("${d.spots} spots", fontSize = 13.sp, color = Lc.muted)
+        }
+        if (found.isNotEmpty()) Note("Tap a box on the photo to remove that ${found.first().label}.")
+    }
+}
+
+/** Find objects' boxes on the photo, labelled; a tap on one removes it (generative remove). */
+@Composable
+internal fun SuggestionLayer(vm: LightCraftViewModel, map: ViewMap, viewW: Float, viewH: Float) {
+    val found by vm.suggestions.collectAsStateWithLifecycle()
+    if (found.isEmpty()) return
+    // the boxes are in photo-as-shot coordinates: place their corners on the shown photo
+    val boxes = remember(found, map) {
+        found.mapNotNull { s ->
+            val v = vm.maskToView(null, floatArrayOf(s.x0, s.y0, s.x1, s.y1))
+            if (v.size < 4 || v.any { !it.isFinite() }) return@mapNotNull null
+            val a = map.toScreen(minOf(v[0], v[2]), minOf(v[1], v[3]))
+            val b = map.toScreen(maxOf(v[0], v[2]), maxOf(v[1], v[3]))
+            s to androidx.compose.ui.geometry.Rect(a, b)
+        }
+    }
+    val current by rememberUpdatedState(boxes)
+    Box(
+        Modifier.fillMaxSize().pointerInput(Unit) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val hit = current.lastOrNull { it.second.contains(down.position) } ?: return@awaitEachGesture
+                down.consume()
+                while (true) {
+                    val ev = awaitPointerEvent()
+                    val c = ev.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!c.pressed) break
+                }
+                vm.removeSuggestion(hit.first, viewW, viewH)
+            }
+        },
+    ) {
+        androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+            boxes.forEach { (_, r) ->
+                drawRect(Color(0xFF2F7DF6), r.topLeft, r.size, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
+            }
+        }
+        boxes.forEach { (s, r) ->
+            Text(
+                "${s.label} ${(s.score * 100).toInt()}%",
+                fontSize = 11.sp,
+                color = Color.White,
+                modifier = Modifier
+                    .offset { androidx.compose.ui.unit.IntOffset(r.left.toInt(), (r.top - 18.dp.toPx()).toInt().coerceAtLeast(0)) }
+                    .background(Color(0xCC2F7DF6), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 4.dp, vertical = 1.dp),
+            )
         }
     }
 }
@@ -203,22 +267,56 @@ private fun Note(text: String) {
     Text(text, fontSize = 13.sp, color = Lc.muted, modifier = Modifier.padding(vertical = 2.dp))
 }
 
-/** While a picker is on, a tap on the photo goes to it (drags and pinches still zoom and pan). */
+/** While a picker is on, a tap on the photo goes to it (drags and pinches still zoom and pan); AI Remove paints strokes. */
 @Composable
 internal fun PhotoTapLayer(vm: LightCraftViewModel, map: ViewMap) {
     val mode by vm.tapMode.collectAsStateWithLifecycle()
+    val heal by vm.heal.collectAsStateWithLifecycle()
     if (mode == TapMode.None) return
     val m by rememberUpdatedState(map)
+    val stroke = remember { androidx.compose.runtime.mutableStateListOf<Offset>() }
     Box(
         Modifier.fillMaxSize().pointerInput(mode) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
+                if (mode == TapMode.AiRemove) {
+                    down.consume()
+                    stroke.clear()
+                    stroke.add(down.position)
+                    while (true) {
+                        val ev = awaitPointerEvent()
+                        if (ev.changes.size > 1) {
+                            stroke.clear()
+                            break
+                        }
+                        val c = ev.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!c.pressed) break
+                        if (c.positionChange() != Offset.Zero) {
+                            c.consume()
+                            stroke.add(c.position)
+                        }
+                    }
+                    if (stroke.isNotEmpty()) {
+                        // at most 64 points along the stroke (the engine keeps every one)
+                        val step = (stroke.size / 64).coerceAtLeast(1)
+                        val pts = stroke.filterIndexed { i, _ -> i % step == 0 || i == stroke.size - 1 }
+                        val uv = FloatArray(pts.size * 2)
+                        pts.forEachIndexed { i, o ->
+                            val p = m.toUv(o)
+                            uv[2 * i] = p.x
+                            uv[2 * i + 1] = p.y
+                        }
+                        vm.generativeStroke(uv)
+                    }
+                    stroke.clear()
+                    return@awaitEachGesture
+                }
                 var moved = false
                 while (true) {
                     val ev = awaitPointerEvent()
                     if (ev.changes.size > 1) moved = true
                     val c = ev.changes.firstOrNull { it.id == down.id } ?: break
-                    if ((c.position - down.position).getDistance() > 24f || c.positionChange() != Offset.Zero && moved) moved = true
+                    if ((c.position - down.position).getDistance() > 24f) moved = true
                     if (!c.pressed) break
                 }
                 if (!moved) {
@@ -227,5 +325,18 @@ internal fun PhotoTapLayer(vm: LightCraftViewModel, map: ViewMap) {
                 }
             }
         },
-    )
+    ) {
+        if (mode == TapMode.AiRemove && stroke.size > 1) {
+            androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
+                val path = androidx.compose.ui.graphics.Path()
+                stroke.forEachIndexed { i, o -> if (i == 0) path.moveTo(o.x, o.y) else path.lineTo(o.x, o.y) }
+                val w = (heal.size * 2f * m.longPx).coerceAtLeast(4f)
+                drawPath(
+                    path,
+                    Color(0x88E61E28),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(w, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round),
+                )
+            }
+        }
+    }
 }

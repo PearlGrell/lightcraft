@@ -123,6 +123,8 @@ impl Mobile {
             lightcraft_engine::lens_profiles::use_dir(Some(lens.clone()));
         }
         *self.lens_dir.lock().unwrap_or_else(PoisonError::into_inner) = Some(lens);
+        // the optional AI models beside it too (downloaded only when the user asks)
+        s.use_ai_models(path.parent().unwrap_or(path).join("models"));
         Ok(report)
     }
 
@@ -233,6 +235,26 @@ impl Mobile {
             .collect()
     }
 
+    /// Points on the rendered photo (0..1) in the corrected frame's coordinates (after lens
+    /// corrections and Upright, before the crop): where spots, red-eye fixes and generative
+    /// removes are stored.
+    pub fn view_to_image(&self, photo: u64, points: &[[f64; 2]]) -> Result<Vec<[f64; 2]>, String> {
+        let (frame, _) = self.mask_frame(photo, None)?;
+        let frame = frame.for_mask(false);
+        let (w, h) = frame.fit(MAP_EDGE, MAP_EDGE);
+        let map = frame.out_to_mask(w.max(1), h.max(1));
+        points
+            .iter()
+            .map(|[u, v]| {
+                if !(u.is_finite() && v.is_finite()) {
+                    return Err("a point is not a number".to_string());
+                }
+                let m = map.apply(lightcraft_geom::Point::new(u * w as f64, v * h as f64));
+                Ok([m.x, m.y])
+            })
+            .collect()
+    }
+
     /// The inverse of [`Mobile::view_to_mask`]: where mask coordinates land on the rendered photo
     /// (0..1), for drawing a gradient's handles. `None` for a point the lens warp can't place.
     pub fn mask_to_view(&self, photo: u64, mask: Option<u32>, points: &[[f64; 2]]) -> Result<Vec<Option<[f64; 2]>>, String> {
@@ -267,6 +289,11 @@ impl Mobile {
         );
         let a = frame.aspect();
         Ok(if a.is_finite() && a > 0.0 { a } else { 1.0 })
+    }
+
+    /// Keep the optional AI models in `dir` (`open_library` picks a folder beside the library).
+    pub fn use_models(&self, dir: &str) {
+        self.lock().use_ai_models(dir);
     }
 
     /// Whether `photo`'s Temp slider is a real Kelvin scale: a raw file whose camera gives it one.
@@ -762,6 +789,46 @@ mod tests {
             assert!(std::fs::metadata(&path).is_ok_and(|f| f.len() > 0), "{o} → {path}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ai_commands_say_what_is_missing_and_work_with_the_models() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        assert_eq!(parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()))["ok"], true);
+        // no models folder yet: listed, not available; using one is a clear error
+        let r = parse(&m.execute("ai.models", ""));
+        assert_eq!(r["result"]["available"], false, "{r}");
+        assert_eq!(parse(&m.execute("ai.select", r#"{"taps": [[0.5, 0.5]]}"#))["ok"], false);
+        // an empty folder: each model is listed as not ready, and a download needs the user's yes
+        let empty = std::env::temp_dir().join(format!("lightcraft-mobile-no-models-{}", std::process::id()));
+        m.use_models(empty.to_str().unwrap());
+        let r = parse(&m.execute("ai.models", ""));
+        assert!(r["result"]["models"].as_array().unwrap().iter().all(|x| x["ready"] == false), "{r}");
+        assert_eq!(parse(&m.execute("ai.download", r#"{"id": "migan-512"}"#))["ok"], false, "refused without acknowledged");
+        let r = parse(&m.execute("spot.generate", r#"{"points": [[0.5, 0.5]]}"#));
+        assert!(r["error"].as_str().unwrap_or("").contains("isn't downloaded"), "{r}");
+
+        let Some(dir) = std::env::var("LIGHTCRAFT_AI_MODELS").ok() else {
+            lightcraft_testkit::skip!(Model, "LIGHTCRAFT_AI_MODELS is not set");
+            return;
+        };
+        m.use_models(&dir);
+        let before = m.render(id, 200, 150, false, false).unwrap();
+        let r = parse(&m.execute("ai.select", r#"{"taps": [[0.5, 0.6, true]]}"#));
+        assert_eq!(r["ok"], true, "{r}");
+        let d = parse(&m.execute("develop.get", ""))["result"].clone();
+        let shape = &d["masks"].as_array().unwrap().last().unwrap()["components"][0]["shape"];
+        assert_eq!(shape["kind"], "object", "{shape}");
+        assert!(shape["seg"]["side"].as_u64().is_some_and(|s| s >= 64), "a stored selection grid");
+        let r = parse(&m.execute("ai.detect", r#"{"min": 0.0}"#));
+        assert_eq!(r["ok"], true, "{r}");
+        let r = parse(&m.execute("spot.generate", r#"{"points": [[0.3, 0.4], [0.35, 0.42]], "size": 0.04}"#));
+        assert_eq!(r["ok"], true, "{r}");
+        let d = parse(&m.execute("develop.get", ""))["result"].clone();
+        assert!(d["spots"][0]["patch"]["data"].as_str().is_some_and(|s| !s.is_empty()), "the spot keeps its generated pixels");
+        assert_ne!(m.render(id, 200, 150, false, false).unwrap(), before, "the edits change the render");
+        let _ = std::fs::remove_dir_all(&empty);
     }
 
     #[test]

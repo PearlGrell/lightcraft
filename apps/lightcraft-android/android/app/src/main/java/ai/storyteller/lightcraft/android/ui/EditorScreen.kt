@@ -64,6 +64,7 @@ import androidx.compose.material.icons.outlined.Straighten
 import androidx.compose.material.icons.outlined.Style
 import androidx.compose.material.icons.outlined.Healing
 import androidx.compose.material.icons.outlined.Thermostat
+import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Vignette
 import androidx.compose.material.icons.outlined.Visibility
@@ -215,7 +216,10 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                     CircularProgressIndicator(Modifier.align(Alignment.Center), color = Lc.accent)
                 }
                 if (tab == MainTab.Masking && !compare && !holding && fit != null) MaskCanvas(vm, ViewMap(fit, zoom, pan, area))
-                if (tab == MainTab.Edit && !compare && !holding && fit != null) PhotoTapLayer(vm, ViewMap(fit, zoom, pan, area))
+                if (tab == MainTab.Edit && !compare && !holding && fit != null) {
+                    PhotoTapLayer(vm, ViewMap(fit, zoom, pan, area))
+                    SuggestionLayer(vm, ViewMap(fit, zoom, pan, area), shown?.width?.toFloat() ?: 1f, shown?.height?.toFloat() ?: 1f)
+                }
                 if (holding && !removing) Pill("BEFORE", Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 16.dp, top = 56.dp))
             }
             // icons over the photo
@@ -621,6 +625,7 @@ private fun iconOf(t: Tool, tab: MainTab): ImageVector = when (tab) {
         else -> Icons.Outlined.RestartAlt
     }
     MainTab.Masking -> when (t.id) {
+        "object" -> Icons.Outlined.TouchApp
         "subject" -> Icons.Outlined.Person
         "background" -> Icons.Outlined.Wallpaper
         "sky" -> Icons.Outlined.Cloud

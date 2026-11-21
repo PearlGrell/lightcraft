@@ -4228,6 +4228,7 @@ dependencies = [
  "fs4",
  "harfrust 0.13.3",
  "libc",
+ "lightcraft-ai",
  "lightcraft-catalog",
  "lightcraft-codecs",
  "lightcraft-color",
@@ -4400,6 +4401,7 @@ dependencies = [
  "lightcraft-engine",
  "lightcraft-geom",
  "lightcraft-raster",
+ "lightcraft-testkit",
  "log",
  "serde_json",
 ]
