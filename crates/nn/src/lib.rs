@@ -9,7 +9,13 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod exec;
+pub mod ops;
 pub mod proto;
+pub mod tensor;
+
+pub use exec::Session;
+pub use tensor::Tensor;
 
 /// What can go wrong reading or running a model.
 #[derive(Debug, thiserror::Error)]
