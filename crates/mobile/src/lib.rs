@@ -996,6 +996,17 @@ mod tests {
         let shape = &d["masks"].as_array().unwrap().last().unwrap()["components"][0]["shape"];
         assert_eq!(shape["kind"], "object", "{shape}");
         assert!(shape["seg"]["side"].as_u64().is_some_and(|s| s >= 64), "a stored selection grid");
+        // Subtract with Object: the tapped object is cut out of the mask as a part of its own
+        let mid = r["result"]["mask"].as_u64().unwrap();
+        let whole = m.render_masked(id, 200, 150, mid as u32, false).unwrap();
+        let r = parse(&m.execute("ai.select", &json!({"id": mid, "op": "subtract", "taps": [[0.5, 0.6, true]]}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let d = parse(&m.execute("develop.get", ""))["result"].clone();
+        let parts = d["masks"].as_array().unwrap().iter().find(|x| x["id"] == mid).unwrap()["components"].clone();
+        assert_eq!(parts.as_array().map(Vec::len), Some(2), "{parts}");
+        assert_eq!(parts[1]["op"], "subtract", "{parts}");
+        assert_ne!(m.render_masked(id, 200, 150, mid as u32, false).unwrap(), whole, "the subtracted part leaves the mask");
+        assert_eq!(parse(&m.execute("ai.select", &json!({"id": mid, "op": "invert", "taps": [[0.5, 0.6]]}).to_string()))["ok"], false);
         let r = parse(&m.execute("ai.detect", r#"{"min": 0.0}"#));
         assert_eq!(r["ok"], true, "{r}");
         let r = parse(&m.execute("spot.generate", r#"{"points": [[0.3, 0.4], [0.35, 0.42]], "size": 0.04}"#));

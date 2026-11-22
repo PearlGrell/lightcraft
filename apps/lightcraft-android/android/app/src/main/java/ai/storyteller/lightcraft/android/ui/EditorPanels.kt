@@ -659,7 +659,16 @@ private fun ObjectHint(vm: LightCraftViewModel, ai: AiModelStatus) {
         Spacer(Modifier.width(6.dp))
         LcButton("Subtract", on = exclude) { vm.setObjectExclude(true) }
         Spacer(Modifier.width(10.dp))
-        Text("Tap the photo to select an object.", fontFamily = Inter, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.weight(1f))
+        val started by vm.objectStarted.collectAsStateWithLifecycle()
+        Text(
+            when {
+                !started -> "Tap an object on the photo to select it."
+                exclude -> "Tap a part to cut it out of the mask."
+                else -> "Tap another object to add it."
+            },
+            fontFamily = Inter, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.weight(1f),
+        )
+        if (started) LcButton("Done") { vm.closeTool() }
     }
 }
 

@@ -90,7 +90,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
     val busy by vm.busy.collectAsStateWithLifecycle()
     val brush by vm.brush.collectAsStateWithLifecycle()
     val activeMask by vm.activeMask.collectAsStateWithLifecycle()
-    val objectExclude by vm.objectExclude.collectAsStateWithLifecycle()
+    val objectStarted by vm.objectStarted.collectAsStateWithLifecycle()
     val wbPicking by vm.wbPicking.collectAsStateWithLifecycle()
     val ai by vm.ai.collectAsStateWithLifecycle()
     var compare by remember(photo) { mutableStateOf(false) }
@@ -196,7 +196,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                                             vm.suggestionBox(s)?.let { b -> u in b[0]..b[2] && v in b[1]..b[3] } == true
                                         }?.let { vm.removeSuggestion(it, r.width, r.height) }
                                         removing && tool?.id == "eraser" -> vm.eraseAt(u, v)
-                                        tapping -> vm.objectTap(u, v, objectExclude)
+                                        tapping -> vm.objectTap(u, v)
                                         painting -> vm.brushStroke(listOf(u to v))
                                     }
                                 },
@@ -245,16 +245,20 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                         }
                     }
                     if (holding && !removing) Pill("Before", Modifier.align(Alignment.TopStart).padding(12.dp))
-                    if (fixed && !cropping) {
-                        val hint = when {
-                            picking -> "Tap a neutral grey or white in the photo"
-                            erasing -> "AI Remove: drag over what to remove"
-                            boxes -> "Tap a box to remove it"
-                            painting && brush.erase -> "Erasing: drag on the photo"
-                            painting -> "Painting: drag on the photo"
-                            objectExclude -> "Tap the parts to subtract"
-                            else -> "Tap an object to select it"
-                        }
+                    // a hint while a photo tool waits for its first touch; none for gradients (the panel
+                    // explains their handles) and none once an Object selection is made
+                    val hint = when {
+                        cropping || gradient -> null
+                        picking -> "Tap a neutral grey or white in the photo"
+                        erasing -> "AI Remove: drag over what to remove"
+                        boxes -> "Tap a box to remove it"
+                        painting && brush.erase -> "Erasing: drag on the photo"
+                        painting -> "Painting: drag on the photo"
+                        tapping && objectStarted -> null
+                        tapping -> "Tap an object to select it"
+                        else -> null
+                    }
+                    if (hint != null) {
                         Row(
                             Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp).clip(RoundedCornerShape(6.dp)).background(Lc.pill).padding(start = 12.dp, end = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -266,7 +270,14 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = Lc.text,
-                                modifier = Modifier.clickable { if (picking) vm.armWbPicker(false) else vm.closeTool() }.padding(horizontal = 10.dp, vertical = 8.dp),
+                                modifier = Modifier.clickable {
+                                    when {
+                                        picking -> vm.armWbPicker(false)
+                                        erasing -> vm.setAiErase(aiErase.copy(on = false))
+                                        boxes -> vm.clearSuggestions()
+                                        else -> vm.closeTool()
+                                    }
+                                }.padding(horizontal = 10.dp, vertical = 8.dp),
                             )
                         }
                     }

@@ -522,6 +522,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             else -> null
         }
         objectMask = null
+        _objectStarted.value = false
         when (tab) {
             MainTab.Presets -> loadPresets()
             MainTab.Crop -> requestRender(draft = false)
@@ -784,6 +785,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     /** A tool of the Masking row: brushes and Object / Describe stay open; the rest add a mask. */
     private fun maskTool(tool: Tool) {
         objectMask = null
+        _objectStarted.value = false
         when (tool.kind) {
             ToolKind.Brush -> {
                 _tool.value = tool
@@ -805,6 +807,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     fun closeTool() {
         _tool.value = null
         objectMask = null
+        _objectStarted.value = false
     }
 
     private fun addMask(kind: String) {
@@ -1345,8 +1348,6 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     /** The Object mask the taps refine (null: the next tap makes a new one). */
     private var objectMask: Int? = null
 
-    /** The taps of the Object mask made with the small model (x, y on the photo, include). */
-    private val quickTaps = mutableListOf<Triple<Double, Double, Boolean>>()
 
     private val _quickSelect = MutableStateFlow(QuickSelectStatus())
     /** The small Object model's state (used while SAM 3 isn't installed). */
@@ -1671,21 +1672,29 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun objectTap(u: Float, v: Float, exclude: Boolean) {
+    private val _objectStarted = MutableStateFlow(false)
+    /** An Object selection has been made with the open tool (the "tap an object" hint can go). */
+    val objectStarted: StateFlow<Boolean> = _objectStarted.asStateFlow()
+
+    /**
+     * A tap on the photo with Object open: the first makes a new Object mask; later ones add the
+     * tapped object to it, or with Subtract on, cut it out (each as a part of the mask of its own).
+     */
+    fun objectTap(u: Float, v: Float) {
         val photo = _editing.value ?: return
         val first = objectMask == null || objectMask != _activeMask.value
+        // read now, not when the tap handler was made: Add / Subtract may have changed since
+        val subtract = _objectExclude.value && !first
         viewModelScope.launch(commands) {
             _busy.value = true
             try {
                 withEngine { e ->
                     val (x, y) = e.viewToImage(photo, u, v) ?: return@withEngine
-                    // every tap so far goes with each request: the small model reruns quickly
-                    if (first) quickTaps.clear()
-                    quickTaps += Triple(x.toDouble(), y.toDouble(), first || !exclude)
-                    val taps = JSONArray(quickTaps.map { (tx, ty, inc) -> JSONArray(listOf(tx, ty, inc)) })
-                    val p = JSONObject().put("taps", taps)
-                    if (!first) objectMask?.let { p.put("id", it) }
+                    val tap = JSONArray(listOf(JSONArray(listOf(x.toDouble(), y.toDouble(), true))))
+                    val p = JSONObject().put("taps", tap)
+                    if (!first) objectMask?.let { p.put("id", it).put("op", if (subtract) "subtract" else "add") }
                     e.execute("ai.select", p)
+                    _objectStarted.value = true
                 }
                 afterEdit(selectNewest = first)
                 if (first) objectMask = _activeMask.value

@@ -214,7 +214,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Select Object",
             [],
             None,
-            "{taps: [[x, y, include?]…] (or points / exclude: [[x, y]…]), normalized photo points; id?: mask to replace the first part of; name?} — select the object the taps point at (EfficientSAM-Ti; the photo is analysed once, then each tap is quick) → {mask, score}",
+            "{taps: [[x, y, include?]…] (or points / exclude: [[x, y]…]), normalized photo points; id?: mask to replace the first part of; op?: add|subtract with id — add the selection to that mask as a new part instead (subtract cuts it out); name?} — select the object the taps point at (EfficientSAM-Ti; the photo is analysed once, then each tap is quick) → {mask, score}",
             has_active,
             |s, p| {
                 let c = "ai.select";
@@ -234,7 +234,22 @@ pub fn specs() -> Vec<CommandSpec> {
                 let r = selector.select(&store, &taps).map_err(|e| ai_err(c, e))?;
                 let seg = serde_json::to_value(SegMask::from_logits(r.side, &r.logits)).map_err(|e| bad(c, e.to_string()))?;
                 let pts = |inc: bool| taps.iter().filter(|t| t.include == inc).map(|t| json!([t.x, t.y])).collect::<Vec<_>>();
+                let op = p.get("op").and_then(Value::as_str);
+                if let Some(op) = op
+                    && op != "add"
+                    && op != "subtract"
+                {
+                    return Err(bad(c, format!("op is add or subtract, not {op:?}")));
+                }
                 let mask = match p.get("id").and_then(Value::as_u64) {
+                    // another part of the mask: the object the taps point at, added or cut out
+                    Some(mid) if op.is_some() => {
+                        s.execute(
+                            "mask.addComponent",
+                            &json!({"id": mid, "op": op, "kind": "object", "points": pts(true), "exclude": pts(false), "seg": seg}),
+                        )?;
+                        mid
+                    }
                     Some(mid) => {
                         let shape = json!({"kind": "object", "hint": pts(true).iter().map(|v| json!({"x": v[0], "y": v[1]})).collect::<Vec<_>>(),
                                            "exclude": pts(false).iter().map(|v| json!({"x": v[0], "y": v[1]})).collect::<Vec<_>>(), "seg": seg});
