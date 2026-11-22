@@ -128,10 +128,21 @@ object Tools {
         Tool("eraser", "Magic Eraser"),
         Tool("ai", "Remove BG", ToolKind.Action),
         Tool("keep", "Keep BG", ToolKind.Action),
+        Tool("people", "People", ToolKind.Action),
         Tool("undo", "Undo", ToolKind.Action),
         Tool("reset", "Restore", ToolKind.Action),
         Tool("export", "Save PNG", ToolKind.Action),
     )
+
+    /** Quick edit: the sliders most edits use. */
+    val quickControls = listOf(
+        "light.exposure", "light.contrast", "light.highlights", "light.shadows", "light.whites", "light.blacks",
+        "wb.temp", "wb.tint", "color.vibrance", "color.saturation",
+        "effects.texture", "effects.clarity", "effects.dehaze", "vignette.amount",
+    )
+
+    /** What Lens Blur keeps in focus without a mask. */
+    val blurShapes = listOf("auto" to "Subject", "round" to "Round", "wide" to "Wide", "tall" to "Tall")
 
     /** A mask's local sliders, in the desktop's order and with its tracks (`panels/masking.rs`, `LOCAL`). */
     val local = listOf(

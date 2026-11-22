@@ -274,6 +274,40 @@ class EditorChromeTest {
     }
 
     @Test
+    fun editExtras() = paparazzi.snapshot {
+        LightCraftTheme {
+            Editor(MainTab.Edit) {
+                SectionHeader("Quick Edit", true, {})
+                SliderList(
+                    listOf(
+                        SliderSpec("e", "Exposure", 0.3f, -5f, 5f, 0f, 2, "EV", Track("centered")),
+                        SliderSpec("t", "Temp", 8f, -100f, 100f, 0f, track = Track("temp")),
+                    ),
+                    none,
+                )
+                SectionDivider()
+                SectionHeader("AI Remove", true, {})
+                Toggle("Brush: Drag Over What to Remove", true) {}
+                LcSlider(SliderSpec("size", "Size", 4f, 0.5f, 25f, 4f, 1), none)
+                Toggle("Best Quality (Slower)", false) {}
+                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    LcButton("Find Objects") {}
+                    Spacer(Modifier.width(10.dp))
+                    Text("Marks people and objects to remove.", fontFamily = Inter, fontSize = 12.sp, color = Lc.dim)
+                }
+                SectionDivider()
+                SectionHeader("Lens Blur", true, {})
+                Toggle("Apply", true) {}
+                Toggle("Use Depth (AI)", true) {}
+                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("In Focus", fontFamily = Inter, fontSize = 13.sp, color = Lc.label, modifier = Modifier.weight(1f))
+                    listOf("Subject", "Round", "Wide", "Tall").forEachIndexed { i, l -> Spacer(Modifier.width(6.dp)); LcButton(l, on = i == 0) {} }
+                }
+            }
+        }
+    }
+
+    @Test
     fun library() = paparazzi.snapshot {
         LightCraftTheme {
             val images = List(14) { i ->

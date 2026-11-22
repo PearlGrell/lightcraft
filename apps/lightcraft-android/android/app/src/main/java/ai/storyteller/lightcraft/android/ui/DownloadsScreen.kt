@@ -57,13 +57,14 @@ fun DownloadsScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
     val ai by vm.ai.collectAsStateWithLifecycle()
     val seg by vm.seg.collectAsStateWithLifecycle()
     val storage by vm.storage.collectAsStateWithLifecycle()
+    val models by vm.aiModels.collectAsStateWithLifecycle()
     BackHandler { vm.openPage(Page.None) }
     LaunchedEffect(Unit) {
         vm.refreshDownloads()
         // keep the page current while something downloads
         while (true) {
             delay(1500)
-            if (vm.ai.value.downloading || vm.seg.value.downloading) vm.refreshDownloads()
+            if (vm.ai.value.downloading || vm.seg.value.downloading || vm.aiModels.value.any { it.downloading }) vm.refreshDownloads()
         }
     }
     Box(Modifier.fillMaxSize().background(Lc.canvas)) {
@@ -79,6 +80,7 @@ fun DownloadsScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
                 Heading("Models", "Downloaded on demand, smallest first. Photos never leave the phone.")
                 SegModelRow(vm, seg)
                 if (Engine.aiMasksAvailable) SamRow(vm, ai)
+                models.sortedBy { it.size }.forEach { LcModelRow(vm, it) }
                 Heading("Storage", "What LightCraft keeps on this phone. Your photos stay in the gallery and aren't counted here.")
                 StorageRows(vm, storage)
                 Spacer(Modifier.height(24.dp))
@@ -234,6 +236,40 @@ private fun SamRow(vm: LightCraftViewModel, ai: AiModelStatus) {
     }
 }
 
+/** One of LightCraft's own optional models: what it does, size, licence, download / cancel / delete. */
+@Composable
+private fun LcModelRow(vm: LightCraftViewModel, m: ai.storyteller.lightcraft.android.LcAiModel) {
+    var confirm by remember { mutableStateOf<String?>(null) }
+    val total = m.total.takeIf { it > 0 } ?: m.size
+    val state = when {
+        m.downloading -> "Downloading… ${mb(m.done)} of ${mb(total)}"
+        m.ready -> "Installed"
+        m.error != null -> "Not installed: ${m.error}"
+        else -> "Not installed"
+    }
+    ItemCard(
+        DeskIcon.Download,
+        m.name,
+        "${m.purpose}. ${m.licence}, not LightCraft's; runs on the phone.",
+        mb(m.size),
+        state,
+        if (m.ready) Lc.text else Lc.dim,
+        progress = if (m.downloading && total > 0) m.done.toFloat() / total else null,
+    ) {
+        when {
+            m.downloading -> LcButton("Cancel") { vm.cancelLcModel(m.id) }
+            m.ready -> LcButton("Delete") { confirm = "delete" }
+            else -> LcButton("Download", on = true) { confirm = "download" }
+        }
+    }
+    when (confirm) {
+        "download" -> Confirm("Download ${m.name}?", "About ${mb(m.size)} from the model's public source, under ${m.licence}. It stays in LightCraft's private storage.", "Download", Lc.accent, onYes = { vm.downloadLcModel(m.id) }) { confirm = null }
+        "delete" -> Confirm("Delete ${m.name}?", "This frees ${mb(m.size)}. Edits you already made keep working.", "Delete", Lc.reject, onYes = { vm.removeLcModel(m.id) }) { confirm = null }
+    }
+}
+
+private fun mb(bytes: Long): String = if (bytes >= 1_000_000_000) gb(bytes) else "${(bytes + 500_000) / 1_000_000} MB"
+
 @Composable
 private fun StorageRows(vm: LightCraftViewModel, s: StorageUse) {
     var confirm by remember { mutableStateOf<String?>(null) }
@@ -246,7 +282,7 @@ private fun StorageRows(vm: LightCraftViewModel, s: StorageUse) {
         DeskIcon.Share, "Export Cache", "Files made for the share sheet. Photos saved to the gallery aren't here.", gb(s.exports),
         if (s.exports > 0) "Can be cleared" else "Empty",
     ) { if (s.exports > 0) LcButton("Clear", onClick = vm::clearExports) }
-    ItemCard(DeskIcon.Download, "Models", "SAM 3, when downloaded. Manage it above.", gb(s.models), if (s.models > 0) "In use" else "Empty")
+    ItemCard(DeskIcon.Download, "Models", "The AI models you downloaded. Manage them above.", gb(s.models), if (s.models > 0) "In use" else "Empty")
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
         Text("Total", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Lc.text, modifier = Modifier.weight(1f))
         Text(gb(s.catalog + s.copies + s.exports + s.models), style = Numbers, fontSize = 14.sp, color = Lc.text)

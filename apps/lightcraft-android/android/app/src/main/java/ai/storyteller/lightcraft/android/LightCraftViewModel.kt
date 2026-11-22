@@ -30,6 +30,10 @@ data class Look(
     val lensProfile: Boolean = false,
     /** Optics: Remove Chromatic Aberration. */
     val removeCa: Boolean = false,
+    /** Lens Blur: applied, what stays in focus without a mask, and whether it uses a depth map. */
+    val blur: Boolean = false,
+    val blurShape: String = "auto",
+    val blurDepth: Boolean = false,
     /** The crop, normalized over the uncropped photo: x0, y0, x1, y1. */
     val crop: List<Float> = listOf(0f, 0f, 1f, 1f),
 )
@@ -153,6 +157,29 @@ data class QuickSelectStatus(
     val licence: String = "",
     val error: String? = null,
 )
+
+/** One of the optional on-device AI models (`ai.models`): fill, best fill, objects, depth, people, select. */
+data class LcAiModel(
+    val id: String,
+    val name: String,
+    val purpose: String,
+    val size: Long,
+    val licence: String,
+    val ready: Boolean,
+    val downloading: Boolean,
+    val done: Long,
+    val total: Long,
+    val error: String?,
+)
+
+/** What Find Objects found: a label, its confidence and its box on the photo as shot (0..1). */
+data class Suggestion(val label: String, val score: Float, val x0: Float, val y0: Float, val x1: Float, val y1: Float)
+
+/** The photo's History (`history.list`): step labels oldest first, the step it is at, and its saved versions. */
+data class HistoryState(val steps: List<String> = emptyList(), val cursor: Int = -1, val versions: List<String> = emptyList())
+
+/** AI Remove: brush size (share of the photo's long edge) and LaMa (best) or MI-GAN (fast). */
+data class AiEraseSettings(val on: Boolean = false, val size: Float = 0.04f, val best: Boolean = false)
 
 /** Where SAM 3 downloads from: Meta's gated Hugging Face page with the person's own token, or a mirror. */
 data class SamSource(val token: String = "", val mirror: String = "") {
@@ -486,7 +513,10 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         if (_tab.value == MainTab.Remove) endCutout()
         // leaving Crop: the photo is shown cropped again
         if (_tab.value == MainTab.Crop) requestRender(draft = false)
+        // the mask overlay comes and goes with the Masking tab
+        val masking = _tab.value == MainTab.Masking || tab == MainTab.Masking
         _tab.value = tab
+        if (masking) requestRender(draft = false)
         _tool.value = when (tab) {
             MainTab.Remove -> Tools.remove[0]
             else -> null
@@ -811,6 +841,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     fun selectMask(id: Int) {
         _activeMask.value = id
         viewModelScope.launch(commands) { withEngine { e -> e.execute("mask.select", JSONObject().put("id", id)) } }
+        requestRender(draft = false)
     }
 
     fun setMaskValue(key: String, value: Float) {
@@ -870,6 +901,21 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             "eraser" -> _tool.value = tool
             "ai" -> removeBackground(keepBackground = false)
             "keep" -> removeBackground(keepBackground = true)
+            "people" -> viewModelScope.launch(commands) {
+                _busy.value = true
+                try {
+                    val e = engine ?: return@launch
+                    try {
+                        e.cutoutPeople()
+                        _cutout.value = e.cutoutFrame()
+                    } catch (t: Exception) {
+                        val m = t.message ?: "People cutout failed"
+                        messages.trySend(if (m.contains("isn't downloaded")) "$m. Get it in Downloads & Storage." else m)
+                    }
+                } finally {
+                    _busy.value = false
+                }
+            }
             "undo" -> cutoutStep { it.cutoutUndo() }
             "reset" -> cutoutStep { it.cutoutReset() }
             "export" -> exportCutout()
@@ -1304,31 +1350,42 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     private var quickPolling = false
 
-    /** Read the small model's state; while it downloads, read it again every second. Command thread. */
+    private val _aiModels = MutableStateFlow<List<LcAiModel>>(emptyList())
+    /** The optional on-device models (Downloads & Storage lists them). */
+    val aiModels: StateFlow<List<LcAiModel>> = _aiModels.asStateFlow()
+
+    /** Read the models' state; while one downloads, read it again every second. Command thread. */
     private fun readQuickSelect() {
         val e = engine ?: return
         val r = runCatching { e.execute("ai.models") as? JSONObject }.getOrNull() ?: return
         val list = r.optJSONArray("models") ?: return
-        val m = (0 until list.length()).mapNotNull { list.optJSONObject(it) }.firstOrNull { it.optString("id") == QUICK_SELECT } ?: return
-        val dl = m.optJSONObject("download")
-        val state = dl?.optString("state", "") ?: ""
-        _quickSelect.value = QuickSelectStatus(
-            ready = m.optBoolean("ready"),
-            downloading = state == "downloading",
-            done = dl?.optLong("done") ?: 0,
-            total = dl?.optLong("total") ?: 0,
-            size = m.optLong("size"),
-            licence = m.optString("licence"),
-            error = dl?.optString("error")?.takeIf { state == "failed" && it.isNotBlank() },
-        )
-        if (_quickSelect.value.downloading && !quickPolling) {
+        _aiModels.value = (0 until list.length()).mapNotNull { list.optJSONObject(it) }.map { m ->
+            val dl = m.optJSONObject("download")
+            val state = dl?.optString("state", "") ?: ""
+            LcAiModel(
+                id = m.optString("id"),
+                name = m.optString("name"),
+                purpose = m.optString("purpose"),
+                size = m.optLong("size"),
+                licence = m.optString("licence"),
+                ready = m.optBoolean("ready"),
+                downloading = state == "downloading",
+                done = dl?.optLong("done") ?: 0,
+                total = dl?.optLong("total") ?: 0,
+                error = dl?.optString("error")?.takeIf { state == "failed" && it.isNotBlank() },
+            )
+        }
+        _aiModels.value.firstOrNull { it.id == QUICK_SELECT }?.let { m ->
+            _quickSelect.value = QuickSelectStatus(m.ready, m.downloading, m.done, m.total, m.size, m.licence, m.error)
+        }
+        if (_aiModels.value.any { it.downloading } && !quickPolling) {
             quickPolling = true
             viewModelScope.launch {
                 try {
                     while (true) {
                         delay(1000)
                         withContext(commands) { readQuickSelect() }
-                        if (!_quickSelect.value.downloading) break
+                        if (_aiModels.value.none { it.downloading }) break
                     }
                 } finally {
                     quickPolling = false
@@ -1347,6 +1404,185 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             withEngine { e -> e.execute("ai.download", JSONObject().put("id", QUICK_SELECT).put("acknowledged", true)) }
             readQuickSelect()
         }
+    }
+
+    /** Download model [id] (the person accepted its licence first). */
+    fun downloadLcModel(id: String) {
+        viewModelScope.launch(commands) {
+            withEngine { e -> e.execute("ai.download", JSONObject().put("id", id).put("acknowledged", true)) }
+            readQuickSelect()
+        }
+    }
+
+    fun cancelLcModel(id: String) {
+        viewModelScope.launch(commands) {
+            withEngine { e -> e.execute("ai.cancelDownload", JSONObject().put("id", id)) }
+            readQuickSelect()
+        }
+    }
+
+    fun removeLcModel(id: String) {
+        viewModelScope.launch(commands) {
+            withEngine { e -> e.execute("ai.removeModel", JSONObject().put("id", id)) }
+            readQuickSelect()
+        }
+    }
+
+    /** Run an AI command with the busy spinner; a missing model says where it downloads. */
+    private fun aiCommand(id: String, params: JSONObject, then: (Any?) -> Unit = {}) {
+        viewModelScope.launch(commands) {
+            _busy.value = true
+            try {
+                val e = engine ?: return@launch
+                val r = try {
+                    e.execute(id, params)
+                } catch (t: EngineException) {
+                    val m = t.message ?: t.kind
+                    messages.trySend(if (m.contains("isn't downloaded")) "$m. Get it in Downloads & Storage." else m)
+                    return@launch
+                }
+                then(r)
+                afterEdit()
+            } finally {
+                _busy.value = false
+            }
+        }
+    }
+
+    // ---- AI Remove, Find Objects --------------------------------------------------------------
+
+    private val _aiErase = MutableStateFlow(AiEraseSettings())
+    /** AI Remove: while on, a drag on the photo is replaced with generated content. */
+    val aiErase: StateFlow<AiEraseSettings> = _aiErase.asStateFlow()
+
+    fun setAiErase(s: AiEraseSettings) {
+        _aiErase.value = s
+    }
+
+    /** One AI Remove stroke ([uv]: points across the shown photo, 0..1). */
+    fun generativeStroke(uv: List<Pair<Float, Float>>) {
+        val photo = _editing.value ?: return
+        val e = engine ?: return
+        if (uv.isEmpty()) return
+        val flat = FloatArray(uv.size * 2) { i -> if (i % 2 == 0) uv[i / 2].first else uv[i / 2].second }
+        val pts = runCatching { e.viewToCorrected(photo, flat) }.getOrNull() ?: return
+        if (pts.size < 2) return
+        val points = JSONArray()
+        for (i in 0 until pts.size / 2) points.put(JSONArray().put(pts[2 * i].toDouble()).put(pts[2 * i + 1].toDouble()))
+        val st = _aiErase.value
+        aiCommand("spot.generate", JSONObject().put("points", points).put("size", st.size.toDouble()).put("quality", if (st.best) "best" else "fast"))
+    }
+
+    private val _suggestions = MutableStateFlow<List<Suggestion>>(emptyList())
+    /** What Find Objects found, drawn as boxes on the photo; tap one to remove it. */
+    val suggestions: StateFlow<List<Suggestion>> = _suggestions.asStateFlow()
+
+    fun findObjects() {
+        aiCommand("ai.detect", JSONObject().put("min", 0.45)) { r ->
+            val objs = (r as? JSONObject)?.optJSONArray("objects")
+            _suggestions.value = (0 until (objs?.length() ?: 0)).mapNotNull { i ->
+                objs?.optJSONObject(i)?.let { o ->
+                    val b = o.optJSONArray("box") ?: return@let null
+                    Suggestion(o.optString("label"), o.optDouble("score").toFloat(), b.optDouble(0).toFloat(), b.optDouble(1).toFloat(), b.optDouble(2).toFloat(), b.optDouble(3).toFloat())
+                }
+            }
+            if (_suggestions.value.isEmpty()) messages.trySend("Nothing found to remove")
+        }
+    }
+
+    fun clearSuggestions() {
+        _suggestions.value = emptyList()
+    }
+
+    /** A suggestion's box on the shown photo (0..1: x0, y0, x1, y1), or null where it has no place. */
+    fun suggestionBox(s: Suggestion): FloatArray? {
+        val photo = _editing.value ?: return null
+        val e = engine ?: return null
+        val v = runCatching { e.maskToView(photo, -1L, floatArrayOf(s.x0, s.y0, s.x1, s.y1)) }.getOrNull() ?: return null
+        if (v.size < 4 || v.any { !it.isFinite() }) return null
+        return floatArrayOf(minOf(v[0], v[2]), minOf(v[1], v[3]), maxOf(v[0], v[2]), maxOf(v[1], v[3]))
+    }
+
+    /** Remove suggestion [s]: an AI Remove stroke along its box's middle, as wide as the box. */
+    fun removeSuggestion(s: Suggestion, viewW: Float, viewH: Float) {
+        _suggestions.value = _suggestions.value - s
+        val b = suggestionBox(s) ?: return
+        val (x0, y0, x1, y1) = b.toList()
+        val bw = (x1 - x0) * viewW
+        val bh = (y1 - y0) * viewH
+        val long = maxOf(viewW, viewH).coerceAtLeast(1f)
+        val radius = minOf(bw, bh) / 2f * 1.15f
+        val size = (radius / long).coerceIn(0.005f, 0.25f)
+        val steps = (maxOf(bw, bh) / radius.coerceAtLeast(1f)).toInt().coerceIn(1, 24)
+        val uv = (0..steps).map { i ->
+            val t = i / steps.toFloat()
+            if (bw >= bh) (x0 + (x1 - x0) * (0.5f / steps + t * (1 - 1f / steps))) to ((y0 + y1) / 2)
+            else ((x0 + x1) / 2) to (y0 + (y1 - y0) * (0.5f / steps + t * (1 - 1f / steps)))
+        }
+        val keep = _aiErase.value
+        _aiErase.value = keep.copy(size = size)
+        generativeStroke(uv)
+        _aiErase.value = keep
+    }
+
+    // ---- Lens Blur -------------------------------------------------------------------------------
+
+    /** Lens Blur's Apply; turning it on with no blur yet starts at 50, as the desktop app does. */
+    fun setLensBlur(on: Boolean) {
+        val patch = JSONObject().put("enabled", on)
+        val amount = _controls.value.firstOrNull { it.id == "lensBlur.amount" }?.value ?: 0f
+        if (on && amount <= 0f) patch.put("amount", 50.0)
+        mergeDevelop(JSONObject().put("lens_blur", patch), "Lens Blur")
+    }
+
+    /** Lens Blur from a depth map (the depth model estimates it once and it is stored), or without. */
+    fun setBlurDepth(on: Boolean) = aiCommand("lensBlur.depth", if (on) JSONObject() else JSONObject().put("clear", true))
+
+    /** What Lens Blur keeps in focus without a mask: `auto` (the subject), `round`, `wide` or `tall`. */
+    fun setBlurShape(shape: String) =
+        mergeDevelop(JSONObject().put("lens_blur", JSONObject().put("shape", shape).put("area", JSONObject.NULL)), "Lens Blur Shape")
+
+    // ---- History and Versions -------------------------------------------------------------------
+
+    private val _history = MutableStateFlow(HistoryState())
+    val history: StateFlow<HistoryState> = _history.asStateFlow()
+
+    /** Read the open photo's History and versions. */
+    fun loadHistory() {
+        viewModelScope.launch(commands) {
+            val r = runCatching { engine?.execute("history.list") as? JSONObject }.getOrNull() ?: return@launch
+            val h = r.optJSONArray("history")
+            val v = r.optJSONArray("versions")
+            _history.value = HistoryState(
+                steps = (0 until (h?.length() ?: 0)).map { h?.optString(it, "") ?: "" },
+                cursor = r.optInt("cursor", -1),
+                versions = (0 until (v?.length() ?: 0)).map { v?.optJSONObject(it)?.optString("name", "Version") ?: "Version" },
+            )
+        }
+    }
+
+    private fun thenHistory(id: String, params: JSONObject) {
+        viewModelScope.launch(commands) {
+            withEngine { e -> e.execute(id, params) }
+            afterEdit()
+        }
+        loadHistory()
+    }
+
+    fun restoreHistory(index: Int) = thenHistory("history.restore", JSONObject().put("index", index))
+    fun createVersion(name: String) = thenHistory("version.create", JSONObject().put("name", name.trim().ifEmpty { "Version" }))
+    fun restoreVersion(index: Int) = thenHistory("version.restore", JSONObject().put("index", index))
+    fun deleteVersion(index: Int) = thenHistory("version.delete", JSONObject().put("index", index))
+
+    // ---- mask overlay ----------------------------------------------------------------------------
+
+    private val _maskOverlay = MutableStateFlow(true)
+    /** Masking tints the selected mask's area red on the photo. */
+    val maskOverlay: StateFlow<Boolean> = _maskOverlay.asStateFlow()
+
+    fun setMaskOverlay(on: Boolean) {
+        _maskOverlay.value = on
+        requestRender(draft = false)
     }
 
     fun cancelQuickSelect() {
@@ -1534,6 +1770,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshDownloads() {
         val app = getApplication<Application>()
         refreshAiStatus()
+        refreshQuickSelect()
         viewModelScope.launch(Dispatchers.IO) {
             if (!_seg.value.downloading) _seg.value = _seg.value.copy(checked = true, installed = Segmenter.installed(app))
             _storage.value = measureStorage()
@@ -1704,6 +1941,9 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             wb = d.optJSONObject("wb")?.optString("mode", "asShot") ?: "asShot",
             lensProfile = d.optJSONObject("optics")?.optBoolean("lens_profile") ?: false,
             removeCa = d.optJSONObject("optics")?.optBoolean("remove_ca") ?: false,
+            blur = d.optJSONObject("lens_blur")?.optBoolean("enabled") ?: false,
+            blurShape = d.optJSONObject("lens_blur")?.optString("shape", "auto")?.ifBlank { "auto" } ?: "auto",
+            blurDepth = d.optJSONObject("lens_blur")?.let { it.has("depth") && !it.isNull("depth") } ?: false,
             crop = d.optJSONObject("crop")?.optJSONObject("geometry")?.optJSONObject("rect")?.let { r ->
                 listOf("x0", "y0", "x1", "y1").map { r.optDouble(it, if (it.endsWith("1")) 1.0 else 0.0).toFloat().coerceIn(0f, 1f) }
             } ?: listOf(0f, 0f, 1f, 1f),
@@ -1736,7 +1976,8 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 .onFailure { messages.trySend("Render failed: ${it.message}") }
             return
         }
-        runCatching { e.render(photo, w, h, draft = draft) }
+        val overlay = _activeMask.value?.takeIf { _tab.value == MainTab.Masking && _maskOverlay.value }
+        runCatching { if (overlay != null) e.renderMasked(photo, w, h, overlay.toLong(), draft) else e.render(photo, w, h, draft = draft) }
             .onSuccess {
                 if (_editing.value == photo) _preview.value = it
                 if (!draft && _showHistogram.value) updateHistogram(e, photo)

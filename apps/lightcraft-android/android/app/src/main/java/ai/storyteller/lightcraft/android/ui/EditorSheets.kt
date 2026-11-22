@@ -1,6 +1,11 @@
 package ai.storyteller.lightcraft.android.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -131,4 +136,73 @@ private fun size(bytes: Long): String? = when {
     bytes <= 0 -> null
     bytes >= 1_000_000 -> "%.1f MB".format(Locale.ROOT, bytes / 1e6)
     else -> "%.0f KB".format(Locale.ROOT, bytes / 1e3)
+}
+
+/** History: every step of the photo's edit, newest first; tap one to go back to it. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HistorySheet(vm: LightCraftViewModel, onDismiss: () -> Unit) {
+    val h by vm.history.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { vm.loadHistory() }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Lc.chrome) {
+        Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 16.dp)) {
+            Text("History", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Lc.text, modifier = Modifier.padding(horizontal = 18.dp))
+            if (h.steps.isEmpty()) {
+                Text("No edits yet.", fontFamily = Inter, fontSize = 13.sp, color = Lc.dim, modifier = Modifier.padding(18.dp))
+                return@Column
+            }
+            androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp).padding(top = 8.dp)) {
+                items(h.steps.size) { k ->
+                    val i = h.steps.lastIndex - k
+                    SheetRow(h.steps[i].ifBlank { "Edit" }, on = i == h.cursor) { vm.restoreHistory(i) }
+                }
+            }
+        }
+    }
+}
+
+/** Versions: named snapshots of the photo's edit; save the current one, restore or delete. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun VersionsSheet(vm: LightCraftViewModel, onDismiss: () -> Unit) {
+    val h by vm.history.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { vm.loadHistory() }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Lc.chrome) {
+        Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 16.dp)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Versions", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Lc.text, modifier = Modifier.weight(1f))
+                LcButton("Save Current", on = true) { vm.createVersion("Version ${h.versions.size + 1}") }
+            }
+            if (h.versions.isEmpty()) {
+                Text("Save the current edit as a version to come back to it later.", fontFamily = Inter, fontSize = 13.sp, color = Lc.dim, modifier = Modifier.padding(18.dp))
+                return@Column
+            }
+            Spacer(Modifier.height(8.dp))
+            h.versions.forEachIndexed { i, name ->
+                Row(Modifier.fillMaxWidth().height(44.dp).padding(start = 18.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(name, fontFamily = Inter, fontSize = 14.sp, color = Lc.text, modifier = Modifier.weight(1f))
+                    LcButton("Restore") { vm.restoreVersion(i) }
+                    Spacer(Modifier.width(4.dp))
+                    LcIconButton(DeskIcon.Trash, "Delete $name", size = 32.dp, iconSize = 16.dp) { vm.deleteVersion(i) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SheetRow(label: String, on: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(42.dp)
+            .padding(horizontal = 10.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
+            .background(if (on) Lc.toolActive else androidx.compose.ui.graphics.Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, fontFamily = Inter, fontSize = 14.sp, color = if (on) Lc.text else Lc.label)
+    }
 }

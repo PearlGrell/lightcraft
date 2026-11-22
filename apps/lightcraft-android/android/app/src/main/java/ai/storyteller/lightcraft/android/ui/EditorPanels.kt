@@ -150,6 +150,11 @@ private fun EditPanel(vm: LightCraftViewModel, all: List<Control>) {
         by("profile.").forEach { LcSlider(it.slider("Profile Amount"), actions) }
         SectionDivider()
 
+        Section("quick", "Quick Edit", open) {
+            val byId = all.associateBy { it.id }
+            SliderList(Tools.quickControls.mapNotNull { byId[it]?.slider() }, actions)
+        }
+
         Section("light", "Light", open) {
             SliderList(by("light.").map { it.slider() }, actions)
             Flyout(DeskIcon.Curve, "Curve", "curve", open) { CurveFlyout(vm, by("curve.")) }
@@ -176,10 +181,25 @@ private fun EditPanel(vm: LightCraftViewModel, all: List<Control>) {
             SubLabel("Noise Reduction")
             SliderList((by("enhance.denoise") + by("detail.nr")).map { it.slider() }, actions)
         }
+        Section("remove", "AI Remove", open) { AiRemoveSection(vm) }
         Section("optics", "Optics", open) {
             Toggle("Enable Profile Corrections", look.lensProfile) { vm.setLensProfile(it) }
             Toggle("Remove Chromatic Aberration", look.removeCa) { vm.setRemoveCa(it) }
             SliderList(by("optics.").map { it.slider() }, actions)
+        }
+        Section("lensBlur", "Lens Blur", open) {
+            Toggle("Apply", look.blur) { vm.setLensBlur(it) }
+            Toggle("Use Depth (AI)", look.blurDepth) { if (look.blur) vm.setBlurDepth(it) }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("In Focus", fontFamily = Inter, fontSize = 13.sp, color = Lc.label, modifier = Modifier.weight(1f))
+                Tools.blurShapes.forEach { (id, label) ->
+                    Spacer(Modifier.width(6.dp))
+                    LcButton(label, on = look.blurShape == id, enabled = look.blur) { vm.setBlurShape(id) }
+                }
+            }
+            Column(Modifier.fillMaxWidth()) {
+                by("lensBlur.").forEach { LcSlider(it.slider(), actions, enabled = look.blur) }
+            }
         }
         Section("geometry", "Geometry", open) {
             SubLabel("Upright")
@@ -216,6 +236,35 @@ private fun Flyout(icon: DeskIcon, title: String, id: String, open: MutableMap<S
     val on = open[id] == true
     FlyoutRow(icon, title, on) { open[id] = !on }
     if (on) content()
+}
+
+/**
+ * AI Remove: with Brush on, drag over something on the photo and it is replaced with generated
+ * content (MI-GAN, or LaMa for Best Quality). Find Objects marks people and things it can remove;
+ * tap a box on the photo to remove that one.
+ */
+@Composable
+private fun AiRemoveSection(vm: LightCraftViewModel) {
+    val st by vm.aiErase.collectAsStateWithLifecycle()
+    val found by vm.suggestions.collectAsStateWithLifecycle()
+    Toggle("Brush: Drag Over What to Remove", st.on) { vm.setAiErase(st.copy(on = it)) }
+    LcSlider(
+        SliderSpec("size", "Size", st.size * 100f, 0.5f, 25f, 4f, 1),
+        SliderActions(change = { _, v -> vm.setAiErase(st.copy(size = v / 100f)) }, done = {}, reset = { vm.setAiErase(st.copy(size = 0.04f)) }),
+    )
+    Toggle("Best Quality (Slower)", st.best) { vm.setAiErase(st.copy(best = it)) }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        LcButton("Find Objects") { vm.findObjects() }
+        if (found.isNotEmpty()) {
+            Spacer(Modifier.width(6.dp))
+            LcButton("Clear") { vm.clearSuggestions() }
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            if (found.isEmpty()) "Marks people and objects to remove." else "Tap a box on the photo to remove it.",
+            fontFamily = Inter, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.weight(1f),
+        )
+    }
 }
 
 @Composable
@@ -465,6 +514,9 @@ private fun MaskPanel(vm: LightCraftViewModel, tool: Tool?) {
         SectionDivider()
         Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 10.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Masks", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Lc.text, modifier = Modifier.weight(1f))
+            val overlay by vm.maskOverlay.collectAsStateWithLifecycle()
+            LcIconButton(DeskIcon.Eye, if (overlay) "Hide mask overlay" else "Show mask overlay", active = overlay, size = 34.dp, iconSize = 18.dp) { vm.setMaskOverlay(!overlay) }
+            Spacer(Modifier.width(6.dp))
             LcButton("Pop Subject") { vm.quickAction("pop") }
             Spacer(Modifier.width(6.dp))
             LcButton("Blue Sky") { vm.quickAction("sky") }
@@ -740,6 +792,7 @@ internal fun gb(bytes: Long) = when {
 private fun removeIcon(id: String): DeskIcon = when (id) {
     "eraser" -> DeskIcon.Eraser
     "ai" -> DeskIcon.Subject
+    "people" -> DeskIcon.Subject
     "keep" -> DeskIcon.Invert
     "undo" -> DeskIcon.Undo
     "reset" -> DeskIcon.Rotate

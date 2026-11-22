@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.PaddingValues
@@ -109,11 +110,15 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
     val quick by vm.quickSelect.collectAsStateWithLifecycle()
     val tapping = tab == MainTab.Masking && tool?.kind == ToolKind.Object && (ai.installed || quick.ready)
     val picking = wbPicking && tab == MainTab.Edit
+    val aiErase by vm.aiErase.collectAsStateWithLifecycle()
+    val found by vm.suggestions.collectAsStateWithLifecycle()
+    val erasing = tab == MainTab.Edit && aiErase.on && !picking
+    val boxes = tab == MainTab.Edit && found.isNotEmpty() && !erasing && !picking
     val cropping = tab == MainTab.Crop
     val cropView by vm.cropView.collectAsStateWithLifecycle()
     val cropRatio by vm.cropRatio.collectAsStateWithLifecycle()
     val look by vm.look.collectAsStateWithLifecycle()
-    val fixed = painting || tapping || picking || cropping
+    val fixed = painting || tapping || picking || cropping || erasing || boxes
     if (fixed && zoom != 1f) {
         zoom = 1f
         pan = Offset.Zero
@@ -151,15 +156,15 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                                 }
                             }
                         }
-                        .pointerInput(photo, painting, fit) {
+                        .pointerInput(photo, painting, erasing, fit) {
                             val r = fit ?: return@pointerInput
-                            if (!painting) return@pointerInput
+                            if (!painting && !erasing) return@pointerInput
                             detectDragGestures(
                                 onDragStart = { o -> stroke.clear(); if (r.contains(o)) stroke.add(o) },
                                 onDragEnd = {
                                     val pts = stroke.map { ((it.x - r.left) / r.width) to ((it.y - r.top) / r.height) }
                                     stroke.clear()
-                                    vm.brushStroke(thin(pts))
+                                    if (erasing) vm.generativeStroke(thin(pts)) else vm.brushStroke(thin(pts))
                                 },
                                 onDragCancel = { stroke.clear() },
                             ) { c, _ ->
@@ -167,7 +172,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                                 if (r.contains(c.position)) stroke.add(c.position)
                             }
                         }
-                        .pointerInput(photo, removing, painting, tapping, picking, fit, tool?.id) {
+                        .pointerInput(photo, removing, painting, tapping, picking, erasing, boxes, found, fit, tool?.id) {
                             detectTapGestures(
                                 onDoubleTap = {
                                     if (!removing && !fixed) {
@@ -182,6 +187,10 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                                     val v = (o.y - r.top) / r.height
                                     when {
                                         picking -> vm.pickWb(u, v)
+                                        erasing -> vm.generativeStroke(listOf(u to v))
+                                        boxes -> found.lastOrNull { s ->
+                                            vm.suggestionBox(s)?.let { b -> u in b[0]..b[2] && v in b[1]..b[3] } == true
+                                        }?.let { vm.removeSuggestion(it, r.width, r.height) }
                                         removing && tool?.id == "eraser" -> vm.eraseAt(u, v)
                                         tapping -> vm.objectTap(u, v, objectExclude)
                                         painting -> vm.brushStroke(listOf(u to v))
@@ -222,8 +231,9 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                     if (cropping && fit != null && cv != null) {
                         CropOverlay(fit, look.crop, cropRatio, cv.width.toFloat() / cv.height.coerceAtLeast(1)) { r -> vm.setCropRect(r[0], r[1], r[2], r[3]) }
                     }
-                    if (painting && fit != null) {
-                        val radius = brush.size * maxOf(fit.width, fit.height)
+                    if (boxes && fit != null) SuggestionBoxes(vm, found, fit)
+                    if ((painting || erasing) && fit != null) {
+                        val radius = (if (erasing) aiErase.size else brush.size) * maxOf(fit.width, fit.height)
                         Canvas(Modifier.fillMaxSize()) {
                             val color = if (brush.erase) Lc.reject.copy(alpha = 0.4f) else Color(0x66E02030)
                             stroke.forEach { drawCircle(color, radius, it) }
@@ -233,6 +243,8 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                     if (fixed && !cropping) {
                         val hint = when {
                             picking -> "Tap a neutral grey or white in the photo"
+                            erasing -> "AI Remove: drag over what to remove"
+                            boxes -> "Tap a box to remove it"
                             painting && brush.erase -> "Erasing: drag on the photo"
                             painting -> "Painting: drag on the photo"
                             objectExclude -> "Tap the parts to subtract"
@@ -292,6 +304,8 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
     when (sheet) {
         "export" -> ExportSheet(vm) { sheet = null }
         "info" -> InfoSheet(vm) { sheet = null }
+        "history" -> HistorySheet(vm) { sheet = null }
+        "versions" -> VersionsSheet(vm) { sheet = null }
     }
 }
 
@@ -373,6 +387,8 @@ private fun TopBar(vm: LightCraftViewModel, compare: Boolean, busy: Boolean, onC
                 LcIconButton(DeskIcon.More, "More", size = 38.dp) { menu = true }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Lc.chrome) {
                     MenuItem(DeskIcon.Info, "Info and Rating") { menu = false; onSheet("info") }
+                    MenuItem(DeskIcon.Clock, "History") { menu = false; onSheet("history") }
+                    MenuItem(DeskIcon.Stack, "Versions") { menu = false; onSheet("versions") }
                     MenuItem(DeskIcon.Versions, "Copy Edit Settings") { menu = false; vm.copyEdits() }
                     if (copied) MenuItem(DeskIcon.Check, "Paste Edit Settings") { menu = false; vm.pasteEdits() }
                     MenuItem(DeskIcon.Rotate, "Reset All Edits") { menu = false; vm.quickAction("reset") }
@@ -482,4 +498,33 @@ internal fun Pill(text: String, modifier: Modifier = Modifier) {
         fontWeight = FontWeight.Medium,
         modifier = modifier.background(Lc.pill, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 4.dp),
     )
+}
+
+/** Find Objects' boxes over the photo ([fit]: where the photo sits on screen), each labelled. */
+@Composable
+private fun SuggestionBoxes(vm: LightCraftViewModel, found: List<ai.storyteller.lightcraft.android.Suggestion>, fit: androidx.compose.ui.geometry.Rect) {
+    val rects = remember(found, fit) {
+        found.mapNotNull { s ->
+            vm.suggestionBox(s)?.let { b ->
+                s to androidx.compose.ui.geometry.Rect(fit.left + b[0] * fit.width, fit.top + b[1] * fit.height, fit.left + b[2] * fit.width, fit.top + b[3] * fit.height)
+            }
+        }
+    }
+    Canvas(Modifier.fillMaxSize()) {
+        rects.forEach { (_, r) ->
+            drawRect(Color.Black.copy(alpha = 0.5f), r.topLeft, r.size, style = androidx.compose.ui.graphics.drawscope.Stroke(3.dp.toPx()))
+            drawRect(Lc.accent, r.topLeft, r.size, style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()))
+        }
+    }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    rects.forEach { (s, r) ->
+        Text(
+            "${s.label} ${(s.score * 100).toInt()}%",
+            fontFamily = Inter, fontSize = 11.sp, color = Lc.text,
+            modifier = Modifier
+                .offset { androidx.compose.ui.unit.IntOffset(r.left.toInt(), (r.top - with(density) { 18.dp.toPx() }).toInt().coerceAtLeast(0)) }
+                .background(Lc.chrome.copy(alpha = 0.85f))
+                .padding(horizontal = 4.dp, vertical = 1.dp),
+        )
+    }
 }
