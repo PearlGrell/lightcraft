@@ -38,6 +38,8 @@ enum class DeskIcon {
     Filmstrip,
     /** Download: an arrow down into a tray (Share turned over). */
     Download,
+    /** Quick Edit: a lightning bolt. */
+    Bolt,
 }
 
 /** [icon] in [tint], [size] square (20 grid units). */
@@ -215,6 +217,7 @@ fun DrawScope.drawDeskIcon(icon: DeskIcon, color: Color) {
             p.circle(14f, 14f, 2.5f); p.line(15.8f to 15.8f, 17.5f to 17.5f)
         }
         DeskIcon.Close -> { p.line(5f to 5f, 15f to 15f); p.line(15f to 5f, 5f to 15f) }
+        DeskIcon.Bolt -> p.closed(11.5f to 2.5f, 4.5f to 11.5f, 9.5f to 11.5f, 8.5f to 17.5f, 15.5f to 8.5f, 10.5f to 8.5f)
         DeskIcon.Check -> p.line(4f to 10.5f, 8.5f to 15f, 16f to 5.5f)
         DeskIcon.Brush -> { p.line(16.5f to 3.5f, 9f to 11f); p.closed(9f to 11f, 6f to 11.5f, 4f to 14.5f, 3.5f to 17f, 6f to 16.5f, 8.5f to 14f) }
         DeskIcon.Linear -> listOf(4f, 7.5f, 11f, 14.5f).forEachIndexed { i, x -> p.seg(x, 3f, x, 17f, color.copy(alpha = color.alpha * (1f - i * 0.22f))) }

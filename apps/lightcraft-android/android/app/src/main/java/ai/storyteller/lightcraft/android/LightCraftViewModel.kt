@@ -52,7 +52,7 @@ data class MaskInfo(val id: Int, val name: String, val adjust: Map<String, Float
             val adjust = a?.keys()?.asSequence()?.associateWith { a.optDouble(it, 0.0).toFloat() } ?: emptyMap()
             val c = o.optJSONArray("components")
             val components = (0 until (c?.length() ?: 0)).mapNotNull { i ->
-                c?.optJSONObject(i)?.let { MaskComponent(it.optJSONObject("shape")?.optString("kind", "") ?: "", it.optString("op", "add"), it.optBoolean("invert")) }
+                c?.optJSONObject(i)?.let { MaskComponent(it.optJSONObject("shape")?.optString("kind", "") ?: "", it.optString("op", "add"), it.optBoolean("invert"), it.optJSONObject("shape")) }
             }
             return MaskInfo(o.optInt("id"), o.optString("name", "Mask"), adjust, components)
         }
@@ -60,7 +60,7 @@ data class MaskInfo(val id: Int, val name: String, val adjust: Map<String, Float
 }
 
 /** One selection of a mask (`kind`: radial, linear, brush, sky, object…) and how it combines. */
-data class MaskComponent(val kind: String, val op: String, val invert: Boolean) {
+data class MaskComponent(val kind: String, val op: String, val invert: Boolean, val shape: JSONObject? = null) {
     val label: String get() = when (kind) {
         "radial" -> "Radial Gradient"
         "linear" -> "Linear Gradient"
@@ -630,6 +630,9 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     fun undo() = if (_tab.value == MainTab.Remove) cutoutStep { it.cutoutUndo() } else runEdit("edit.undo")
     fun redo() = runEdit("edit.redo")
 
+    /** ⋮ → Reset: all edits, or with Remove open, the cutout back to the original. */
+    fun resetAll() = if (_tab.value == MainTab.Remove) cutoutStep { it.cutoutReset() } else quickAction("reset")
+
     // ---- curve ---------------------------------------------------------------------------------
 
     /** The point curve of [channel] moved (live while dragging; one undo step per drag). */
@@ -964,7 +967,8 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun exportCutout() {
+    /** The top bar's Export while Remove is open: the cutout as a PNG. */
+    fun exportCutout() {
         viewModelScope.launch(commands) {
             _busy.value = true
             try {
@@ -1579,6 +1583,44 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     private val _maskOverlay = MutableStateFlow(true)
     /** Masking tints the selected mask's area red on the photo. */
     val maskOverlay: StateFlow<Boolean> = _maskOverlay.asStateFlow()
+
+    /** Mask [mask]'s coordinates → the shown photo (0..1 pairs; NaN where a point has no place). */
+    fun maskToView(mask: Int, pts: FloatArray): FloatArray {
+        val photo = _editing.value ?: return FloatArray(0)
+        val e = engine ?: return FloatArray(0)
+        return runCatching { e.maskToView(photo, mask.toLong(), pts) }.getOrDefault(FloatArray(0))
+    }
+
+    /** Points on the shown photo (0..1 pairs) → mask [mask]'s coordinates. */
+    fun viewToMask(mask: Int, uv: FloatArray): FloatArray {
+        val photo = _editing.value ?: return FloatArray(0)
+        val e = engine ?: return FloatArray(0)
+        return runCatching { e.viewToMask(photo, mask.toLong(), uv) }.getOrDefault(FloatArray(0))
+    }
+
+    /** Width ÷ height of the space radial radii are measured in (long-edge units). */
+    fun maskAspect(): Double {
+        val photo = _editing.value ?: return 1.0
+        val e = engine ?: return 1.0
+        return runCatching { e.maskAspect(photo) }.getOrDefault(1.0)
+    }
+
+    /** A gradient's handle dragged: part [component] of the selected mask takes [shape] (one undo step per drag). */
+    fun moveComponent(component: Int, shape: JSONObject, done: Boolean) {
+        val id = _activeMask.value ?: return
+        _masks.value = _masks.value.map { m ->
+            if (m.id != id) m else m.copy(components = m.components.mapIndexed { i, c -> if (i == component) c.copy(shape = shape) else c })
+        }
+        val copy = JSONObject(shape.toString())
+        viewModelScope.launch(commands) {
+            withEngine { e ->
+                begin(e, "Move Mask")
+                e.execute("mask.update", JSONObject().put("id", id).put("component", component).put("shape", copy))
+            }
+            requestRender(draft = !done)
+        }
+        if (done) finishInteraction()
+    }
 
     fun setMaskOverlay(on: Boolean) {
         _maskOverlay.value = on

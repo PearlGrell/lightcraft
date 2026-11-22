@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -98,11 +99,12 @@ class EditorChromeTest {
     }
 
     @Composable
-    private fun Editor(tab: MainTab, panel: @Composable () -> Unit) {
+    private fun Editor(tab: MainTab, onPhoto: @Composable () -> Unit = {}, panel: @Composable () -> Unit) {
         Column(Modifier.fillMaxSize().background(Lc.canvas)) {
             TopBar("LC01207.JPG")
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Image(photo(900, 600).asImageBitmap(), "Photo", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                onPhoto()
             }
             Row(Modifier.fillMaxWidth().height(64.dp).background(Lc.inset).padding(horizontal = 8.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 repeat(6) { i ->
@@ -166,35 +168,85 @@ class EditorChromeTest {
     @Test
     fun masking() = paparazzi.snapshot {
         LightCraftTheme {
-            Editor(MainTab.Masking) {
+            Editor(
+                MainTab.Masking,
+                onPhoto = {
+                    // a radial gradient's outline and handles over the photo
+                    Canvas(Modifier.fillMaxSize()) {
+                        val c = androidx.compose.ui.geometry.Offset(size.width * 0.62f, size.height * 0.42f)
+                        val rx = size.width * 0.2f
+                        val ry = size.height * 0.26f
+                        val outline = (0 until 64).map { i -> val t = i / 64.0 * 2 * Math.PI; androidx.compose.ui.geometry.Offset(c.x + rx * kotlin.math.cos(t).toFloat(), c.y + ry * kotlin.math.sin(t).toFloat()) }
+                        val handles = listOf(c, c.copy(x = c.x + rx), c.copy(y = c.y + ry), c.copy(x = c.x - rx), c.copy(y = c.y - ry))
+                        drawGradient("radial", handles, outline)
+                    }
+                },
+            ) {
                 PanelTitle("Masking")
                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
                     listOf(
                         listOf(DeskIcon.Subject to "Subject", DeskIcon.Sky to "Sky", DeskIcon.Subject to "Background", DeskIcon.Brush to "Brush"),
                         listOf(DeskIcon.Linear to "Linear", DeskIcon.Radial to "Radial", DeskIcon.Sliders to "Luminance", DeskIcon.Target to "Object"),
-                    ).forEach { row -> Row(Modifier.fillMaxWidth()) { row.forEachIndexed { i, (icon, l) -> Tile(icon, l, i == 1 && l == "Radial", Modifier.weight(1f)) {} } } }
+                    ).forEach { row -> Row(Modifier.fillMaxWidth()) { row.forEach { (icon, l) -> Tile(icon, l, l == "Radial", Modifier.weight(1f)) {} } } }
                 }
                 SectionDivider()
-                SubLabel("Masks")
-                Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp).height(40.dp).clip(RoundedCornerShape(4.dp)).background(Lc.toolActive).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    LcIcon(DeskIcon.Radial, Lc.text, 16.dp)
+                Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 10.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Masks", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Lc.text, modifier = Modifier.weight(1f))
+                    LcButton("Pop Subject") {}
+                    Spacer(Modifier.width(6.dp))
+                    LcButton("Blue Sky") {}
+                }
+                listOf(DeskIcon.Radial to "Sun glow", DeskIcon.Sky to "Sky").forEachIndexed { i, (icon, name) ->
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp).height(40.dp).clip(RoundedCornerShape(4.dp)).background(if (i == 0) Lc.toolActive else Lc.chrome).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        LcIcon(icon, Lc.text, 16.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text(name, fontFamily = Inter, fontSize = 14.sp, color = Lc.text)
+                    }
+                }
+                Toggle("Show Overlay (selected mask in red)", true) {}
+                Spacer(Modifier.height(6.dp))
+                Box(Modifier.fillMaxWidth().height(6.dp).background(Lc.inset))
+                Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 12.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Selected Mask", fontFamily = Inter, fontSize = 12.sp, color = Lc.dim)
+                        Text("Sun glow", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Lc.text)
+                    }
+                    LcIconButton(DeskIcon.Trash, "Delete", size = 36.dp, iconSize = 18.dp) {}
+                }
+                Text("Drag the handles on the photo to move or resize the gradient.", fontFamily = Inter, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp))
+                SubLabel("Selections")
+                Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    LcIcon(DeskIcon.Radial, Lc.icon, 16.dp)
                     Spacer(Modifier.width(10.dp))
-                    Text("Sun glow", fontFamily = Inter, fontSize = 14.sp, color = Lc.text)
+                    Text("Radial Gradient", fontFamily = Inter, fontSize = 14.sp, color = Lc.text)
                 }
-                Row(Modifier.fillMaxWidth().padding(start = 18.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    LcButton("Add") {}
-                    Spacer(Modifier.width(6.dp))
-                    LcButton("Subtract") {}
-                    Spacer(Modifier.width(6.dp))
-                    LcButton("Invert") {}
-                    LcIconButton(DeskIcon.Trash, "Delete", size = 32.dp, iconSize = 16.dp) {}
-                }
+                SectionDivider()
+                SubLabel("Adjustments")
                 SliderList(
                     listOf(
                         SliderSpec("temp", "Temp", 40f, -100f, 100f, 0f, track = Track("temp")),
-                        SliderSpec("tint", "Tint", 0f, -100f, 100f, 0f, track = Track("tint")),
-                        SliderSpec("hue", "Hue", 0f, -100f, 100f, 0f, track = Track("rainbow")),
-                        SliderSpec("saturation", "Saturation", 15f, -100f, 100f, 0f, track = Track("gradient", "#7a7a7a", "#e04a3a")),
+                        SliderSpec("exposure", "Exposure", 0.4f, -4f, 4f, 0f, 2),
+                    ),
+                    none,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun quickEdit() = paparazzi.snapshot {
+        LightCraftTheme {
+            Editor(MainTab.Quick) {
+                PanelTitle("Quick Edit")
+                SliderList(
+                    listOf(
+                        SliderSpec("e", "Exposure", 0.3f, -5f, 5f, 0f, 2, "EV", Track("centered")),
+                        SliderSpec("c", "Contrast", 12f, -100f, 100f, 0f),
+                        SliderSpec("h", "Highlights", -30f, -100f, 100f, 0f),
+                        SliderSpec("s", "Shadows", 25f, -100f, 100f, 0f),
+                        SliderSpec("t", "Temp", 8f, -100f, 100f, 0f, track = Track("temp")),
+                        SliderSpec("n", "Tint", 0f, -100f, 100f, 0f, track = Track("tint")),
+                        SliderSpec("v", "Vibrance", 15f, -100f, 100f, 0f, track = Track("gradient", "#7a7a7a", "#d8406a")),
                     ),
                     none,
                 )

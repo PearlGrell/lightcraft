@@ -68,7 +68,7 @@ data class Group(val title: String, val prefixes: List<String>, val exclude: Lis
 
 /** The six tabs of the editor's bottom bar. */
 /** The editor's tools, as the desktop's tool rail orders them. */
-enum class MainTab(val label: String) { Edit("Edit"), Crop("Crop"), Remove("Remove"), Masking("Masking"), Presets("Presets") }
+enum class MainTab(val label: String) { Quick("Quick Edit"), Edit("Edit"), Crop("Crop"), Remove("Remove"), Masking("Masking"), Presets("Presets") }
 
 enum class ToolKind { Sliders, Action, Curve, Brush, Object, Describe }
 
@@ -129,9 +129,6 @@ object Tools {
         Tool("ai", "Remove BG", ToolKind.Action),
         Tool("keep", "Keep BG", ToolKind.Action),
         Tool("people", "People", ToolKind.Action),
-        Tool("undo", "Undo", ToolKind.Action),
-        Tool("reset", "Restore", ToolKind.Action),
-        Tool("export", "Save PNG", ToolKind.Action),
     )
 
     /** Quick edit: the sliders most edits use. */

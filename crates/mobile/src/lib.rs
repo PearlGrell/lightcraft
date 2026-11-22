@@ -327,7 +327,15 @@ impl Mobile {
     /// tool draws its frame over (crop rectangles are normalized to this uncropped photo).
     pub fn render_uncropped(&self, photo: u64, max_w: u32, max_h: u32, draft: bool) -> Result<Frame, String> {
         let (w, h) = (clamp_edge(max_w)?, clamp_edge(max_h)?);
-        let job = self.lock().loupe_job(PhotoId(photo), w, h, false).ok_or_else(|| format!("no photo {photo}"))?;
+        let job = {
+            let mut s = self.lock();
+            let mut d = (*s.develop_of(PhotoId(photo)).ok_or_else(|| format!("no photo {photo}"))?).clone();
+            // the crop rectangle lives in the straightened frame, in units of the photo: keep the
+            // angle and open the rectangle to the whole frame, so straightening shows as it is made
+            // and the crop tool's frame lines up with the picture (blank corners past the photo)
+            d.crop.geometry.rect = lightcraft_geom::Rect::UNIT;
+            s.preview_job(PhotoId(photo), w, h, true, &d).ok_or_else(|| format!("no photo {photo}"))?
+        };
         run(if draft { job.draft() } else { job })
     }
 
@@ -1255,5 +1263,23 @@ mod tests {
         assert_eq!(got["ok"], true, "{got}");
         assert!(got["result"].to_string().contains("0.7"), "{got}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_crop_view_shows_the_straighten_angle_and_ignores_the_crop() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        assert_eq!(parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()))["ok"], true);
+        let plain = m.render_uncropped(id, 160, 120, false).unwrap();
+        // a tight crop leaves the crop tool's view as it was
+        assert_eq!(parse(&m.execute("crop.set", &json!({"rect": [0.2, 0.2, 0.6, 0.6]}).to_string()))["ok"], true);
+        let cropped = m.render_uncropped(id, 160, 120, false).unwrap();
+        assert_eq!((cropped.width, cropped.height), (plain.width, plain.height));
+        assert_eq!(cropped.rgba, plain.rgba, "the crop tool's view is the whole frame");
+        // …while straightening changes it at once
+        let r = parse(&m.execute("develop.set", &json!({"control": "crop.angle", "value": 8.0}).to_string()));
+        assert_eq!(r["ok"], true, "{r}");
+        let turned = m.render_uncropped(id, 160, 120, false).unwrap();
+        assert_ne!(turned.rgba, plain.rgba, "the straighten angle shows in the crop tool's view");
     }
 }

@@ -118,7 +118,11 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
     val cropView by vm.cropView.collectAsStateWithLifecycle()
     val cropRatio by vm.cropRatio.collectAsStateWithLifecycle()
     val look by vm.look.collectAsStateWithLifecycle()
-    val fixed = painting || tapping || picking || cropping || erasing || boxes
+    val maskList by vm.masks.collectAsStateWithLifecycle()
+    val selectedMask = maskList.firstOrNull { it.id == activeMask }
+    val gradient = tab == MainTab.Masking && !painting && !tapping &&
+        selectedMask?.components?.any { it.kind == "radial" || it.kind == "linear" } == true
+    val fixed = painting || tapping || picking || cropping || erasing || boxes || gradient
     if (fixed && zoom != 1f) {
         zoom = 1f
         pan = Offset.Zero
@@ -232,6 +236,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
                         CropOverlay(fit, look.crop, cropRatio, cv.width.toFloat() / cv.height.coerceAtLeast(1)) { r -> vm.setCropRect(r[0], r[1], r[2], r[3]) }
                     }
                     if (boxes && fit != null) SuggestionBoxes(vm, found, fit)
+                    if (gradient && fit != null && selectedMask != null && !compare && !holding) GradientHandles(vm, selectedMask, fit)
                     if ((painting || erasing) && fit != null) {
                         val radius = (if (erasing) aiErase.size else brush.size) * maxOf(fit.width, fit.height)
                         Canvas(Modifier.fillMaxSize()) {
@@ -364,6 +369,7 @@ private fun thin(points: List<Pair<Float, Float>>): List<Pair<Float, Float>> {
 private fun TopBar(vm: LightCraftViewModel, compare: Boolean, busy: Boolean, onCompare: () -> Unit, onSheet: (String) -> Unit) {
     val copied by vm.copied.collectAsStateWithLifecycle()
     val info by vm.info.collectAsStateWithLifecycle()
+    val tab by vm.tab.collectAsStateWithLifecycle()
     var menu by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().background(Lc.chrome).statusBarsPadding()) {
         Row(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -382,7 +388,7 @@ private fun TopBar(vm: LightCraftViewModel, compare: Boolean, busy: Boolean, onC
             LcIconButton(DeskIcon.Undo, "Undo", size = 38.dp, onClick = vm::undo)
             LcIconButton(DeskIcon.Redo, "Redo", size = 38.dp, onClick = vm::redo)
             LcIconButton(DeskIcon.BeforeAfter, "Before / After", active = compare, size = 38.dp, onClick = onCompare)
-            LcIconButton(DeskIcon.Share, "Export", size = 38.dp) { onSheet("export") }
+            LcIconButton(DeskIcon.Share, if (tab == MainTab.Remove) "Save PNG" else "Export", size = 38.dp) { if (tab == MainTab.Remove) vm.exportCutout() else onSheet("export") }
             Box {
                 LcIconButton(DeskIcon.More, "More", size = 38.dp) { menu = true }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Lc.chrome) {
@@ -391,7 +397,7 @@ private fun TopBar(vm: LightCraftViewModel, compare: Boolean, busy: Boolean, onC
                     MenuItem(DeskIcon.Stack, "Versions") { menu = false; onSheet("versions") }
                     MenuItem(DeskIcon.Versions, "Copy Edit Settings") { menu = false; vm.copyEdits() }
                     if (copied) MenuItem(DeskIcon.Check, "Paste Edit Settings") { menu = false; vm.pasteEdits() }
-                    MenuItem(DeskIcon.Rotate, "Reset All Edits") { menu = false; vm.quickAction("reset") }
+                    MenuItem(DeskIcon.Rotate, if (tab == MainTab.Remove) "Restore Original" else "Reset All Edits") { menu = false; vm.resetAll() }
                     MenuItem(DeskIcon.Trash, "Delete Photo", Lc.reject) { menu = false; vm.deleteCurrent() }
                 }
             }
@@ -410,6 +416,7 @@ private fun MenuItem(icon: DeskIcon, label: String, tint: Color = Lc.text, onCli
 }
 
 private fun railIcon(t: MainTab) = when (t) {
+    MainTab.Quick -> DeskIcon.Bolt
     MainTab.Edit -> DeskIcon.Sliders
     MainTab.Crop -> DeskIcon.Crop
     MainTab.Remove -> DeskIcon.Eraser

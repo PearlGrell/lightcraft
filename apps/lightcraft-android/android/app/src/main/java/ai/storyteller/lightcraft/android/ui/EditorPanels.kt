@@ -86,6 +86,7 @@ internal fun Panel(vm: LightCraftViewModel, tab: MainTab, tool: Tool?) {
     val controls by vm.controls.collectAsStateWithLifecycle()
     when (tab) {
         MainTab.Edit -> EditPanel(vm, controls)
+        MainTab.Quick -> QuickPanel(vm, controls)
         MainTab.Crop -> CropPanel(vm, controls)
         MainTab.Masking -> MaskPanel(vm, tool)
         MainTab.Remove -> RemovePanel(vm, tool)
@@ -150,10 +151,6 @@ private fun EditPanel(vm: LightCraftViewModel, all: List<Control>) {
         by("profile.").forEach { LcSlider(it.slider("Profile Amount"), actions) }
         SectionDivider()
 
-        Section("quick", "Quick Edit", open) {
-            val byId = all.associateBy { it.id }
-            SliderList(Tools.quickControls.mapNotNull { byId[it]?.slider() }, actions)
-        }
 
         Section("light", "Light", open) {
             SliderList(by("light.").map { it.slider() }, actions)
@@ -200,13 +197,6 @@ private fun EditPanel(vm: LightCraftViewModel, all: List<Control>) {
             Column(Modifier.fillMaxWidth()) {
                 by("lensBlur.").forEach { LcSlider(it.slider(), actions, enabled = look.blur) }
             }
-        }
-        Section("geometry", "Geometry", open) {
-            SubLabel("Upright")
-            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf("off" to "Off", "auto" to "Auto", "level" to "Level", "vertical" to "Vertical", "full" to "Full").forEach { (m, l) -> LcButton(l) { vm.upright(m) } }
-            }
-            SliderList(by("geometry.").map { it.slider() }, actions)
         }
         Section("calibration", "Calibration", open) {
             SliderList(by("calibration.").map { it.slider() }, actions)
@@ -444,6 +434,25 @@ private fun CropPanel(vm: LightCraftViewModel, all: List<Control>) {
             LcButton("Auto", onClick = vm::autoStraighten)
         }
         SliderList(all.filter { it.id == "crop.angle" }.map { it.slider("Angle", "°") }, controlActions(vm))
+        // Geometry lives here only: Upright and the transform sliders
+        SectionDivider()
+        SubLabel("Upright")
+        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("off" to "Off", "auto" to "Auto", "level" to "Level", "vertical" to "Vertical", "full" to "Full").forEach { (m, l) -> LcButton(l) { vm.upright(m) } }
+        }
+        SubLabel("Transform")
+        SliderList(all.filter { it.id.startsWith("geometry.") }.map { it.slider() }, controlActions(vm))
+        Spacer(Modifier.height(16.dp))
+    }
+}
+
+/** Quick Edit: the sliders most edits use, on a page of their own. */
+@Composable
+private fun QuickPanel(vm: LightCraftViewModel, all: List<Control>) {
+    val byId = all.associateBy { it.id }
+    Column(Modifier.fillMaxWidth()) {
+        PanelTitle("Quick Edit")
+        SliderList(Tools.quickControls.mapNotNull { byId[it]?.slider() }, controlActions(vm))
         Spacer(Modifier.height(16.dp))
     }
 }
@@ -513,9 +522,6 @@ private fun MaskPanel(vm: LightCraftViewModel, tool: Tool?) {
         SectionDivider()
         Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 10.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Masks", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Lc.text, modifier = Modifier.weight(1f))
-            val overlay by vm.maskOverlay.collectAsStateWithLifecycle()
-            LcIconButton(DeskIcon.Eye, if (overlay) "Hide mask overlay" else "Show mask overlay", active = overlay, size = 34.dp, iconSize = 18.dp) { vm.setMaskOverlay(!overlay) }
-            Spacer(Modifier.width(6.dp))
             LcButton("Pop Subject") { vm.quickAction("pop") }
             Spacer(Modifier.width(6.dp))
             LcButton("Blue Sky") { vm.quickAction("sky") }
@@ -538,9 +544,26 @@ private fun MaskPanel(vm: LightCraftViewModel, tool: Tool?) {
                 Text(m.name, fontFamily = Inter, fontSize = 14.sp, color = Lc.text, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        if (mask == null) return@Column
+        val overlay by vm.maskOverlay.collectAsStateWithLifecycle()
+        Toggle("Show Overlay (selected mask in red)", overlay) { vm.setMaskOverlay(it) }
+        if (mask == null) {
+            Text("Tap a mask above to adjust it.", fontFamily = Inter, fontSize = 13.sp, color = Lc.dim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp))
+            return@Column
+        }
+        // ---- the selected mask, apart from the list
         Spacer(Modifier.height(6.dp))
-        SectionDivider()
+        Box(Modifier.fillMaxWidth().height(6.dp).background(Lc.inset))
+        Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 12.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Selected Mask", fontFamily = Inter, fontSize = 12.sp, color = Lc.dim)
+                Text(mask.name, fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Lc.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            LcIconButton(DeskIcon.Trash, "Delete mask ${mask.name}", size = 36.dp, iconSize = 18.dp) { vm.maskCommand("mask.delete") }
+        }
+        if (mask.components.any { it.kind == "radial" || it.kind == "linear" }) {
+            Text("Drag the handles on the photo to move or resize the gradient.", fontFamily = Inter, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 2.dp))
+        }
+        SubLabel("Selections")
         // the selected mask's selections, each with Add / Subtract / Invert / delete
         mask.components.forEachIndexed { i, c ->
             Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -565,14 +588,13 @@ private fun MaskPanel(vm: LightCraftViewModel, tool: Tool?) {
         }
         if (tool?.kind == ToolKind.Brush) BrushSettings(vm)
         Spacer(Modifier.height(4.dp))
+        SectionDivider()
+        SubLabel("Adjustments")
         val specs = Tools.local.map { s ->
             SliderSpec(s.key, s.label, mask.adjust[s.key] ?: 0f, s.min, s.max, 0f, s.decimals, "", s.track)
         }
         SliderList(specs, SliderActions(change = { k, v -> vm.setMaskValue(k, v) }, done = vm::finishInteraction, reset = { k -> vm.setMaskValue(k, 0f); vm.finishInteraction() }))
-        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp)) {
-            Spacer(Modifier.weight(1f))
-            LcButton("Delete Mask") { vm.maskCommand("mask.delete") }
-        }
+        Spacer(Modifier.height(12.dp))
     }
 }
 
