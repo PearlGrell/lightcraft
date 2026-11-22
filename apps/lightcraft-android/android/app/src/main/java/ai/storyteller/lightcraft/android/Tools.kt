@@ -118,8 +118,8 @@ object Tools {
         Tool("linear", "Linear", ToolKind.Action),
         Tool("radial", "Radial", ToolKind.Action),
         Tool("luminanceRange", "Luminance", ToolKind.Action),
-        if (ai) Tool("object", "Object", ToolKind.Object) else null,
-        if (ai) Tool("describe", "Describe", ToolKind.Describe) else null,
+        // Object selects with the small on-device model (EfficientSAM-Ti), on every phone
+        Tool("object", "Object", ToolKind.Object),
         Tool("dodge", "Dodge", ToolKind.Brush),
         Tool("burn", "Burn", ToolKind.Brush),
     )

@@ -108,7 +108,7 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
     val removing = tab == MainTab.Remove
     val painting = tab == MainTab.Masking && tool?.kind == ToolKind.Brush && activeMask != null
     val quick by vm.quickSelect.collectAsStateWithLifecycle()
-    val tapping = tab == MainTab.Masking && tool?.kind == ToolKind.Object && (ai.installed || quick.ready)
+    val tapping = tab == MainTab.Masking && tool?.kind == ToolKind.Object && quick.ready
     val picking = wbPicking && tab == MainTab.Edit
     val aiErase by vm.aiErase.collectAsStateWithLifecycle()
     val found by vm.suggestions.collectAsStateWithLifecycle()

@@ -1329,7 +1329,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Object (SAM 3): the first tap makes the mask, later taps add (or with [exclude], remove) parts. */
+    /** Object (EfficientSAM-Ti): the first tap makes the mask, later taps add (or with [exclude], remove) parts. */
     private val _objectExclude = MutableStateFlow(false)
     /** Object taps remove parts instead of adding them. */
     val objectExclude: StateFlow<Boolean> = _objectExclude.asStateFlow()
@@ -1600,20 +1600,13 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 withEngine { e ->
                     val (x, y) = e.viewToImage(photo, u, v) ?: return@withEngine
-                    if (!_ai.value.installed) {
-                        // the small model: every tap so far goes with each request (it reruns quickly)
-                        if (first) quickTaps.clear()
-                        quickTaps += Triple(x.toDouble(), y.toDouble(), first || !exclude)
-                        val taps = JSONArray(quickTaps.map { (tx, ty, inc) -> JSONArray(listOf(tx, ty, inc)) })
-                        val p = JSONObject().put("taps", taps)
-                        if (!first) objectMask?.let { p.put("id", it) }
-                        e.execute("ai.select", p)
-                    } else if (first) {
-                        val pt = JSONArray(listOf(JSONArray(listOf(x.toDouble(), y.toDouble()))))
-                        e.execute("mask.add", JSONObject().put("kind", "object").put("name", "Object").put("points", pt))
-                    } else {
-                        e.execute("mask.objectPoint", JSONObject().put("x", x.toDouble()).put("y", y.toDouble()).put("exclude", exclude))
-                    }
+                    // every tap so far goes with each request: the small model reruns quickly
+                    if (first) quickTaps.clear()
+                    quickTaps += Triple(x.toDouble(), y.toDouble(), first || !exclude)
+                    val taps = JSONArray(quickTaps.map { (tx, ty, inc) -> JSONArray(listOf(tx, ty, inc)) })
+                    val p = JSONObject().put("taps", taps)
+                    if (!first) objectMask?.let { p.put("id", it) }
+                    e.execute("ai.select", p)
                 }
                 afterEdit(selectNewest = first)
                 if (first) objectMask = _activeMask.value

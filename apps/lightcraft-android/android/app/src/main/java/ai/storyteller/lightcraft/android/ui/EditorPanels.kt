@@ -507,7 +507,6 @@ private fun MaskPanel(vm: LightCraftViewModel, tool: Tool?) {
         }
         when (tool?.kind) {
             ToolKind.Object -> ObjectHint(vm, ai)
-            ToolKind.Describe -> DescribeBox(vm, ai)
             else -> {}
         }
         Spacer(Modifier.height(6.dp))
@@ -628,10 +627,8 @@ private fun BrushSettings(vm: LightCraftViewModel) {
 @Composable
 private fun ObjectHint(vm: LightCraftViewModel, ai: AiModelStatus) {
     val quick by vm.quickSelect.collectAsStateWithLifecycle()
-    if (!ai.installed && !quick.ready) {
+    if (!quick.ready) {
         QuickSelectCard(vm, quick)
-        SectionDivider()
-        AiModelCard(vm, ai)
         return
     }
     val exclude by vm.objectExclude.collectAsStateWithLifecycle()
@@ -681,89 +678,6 @@ private fun QuickSelectCard(vm: LightCraftViewModel, q: QuickSelectStatus) {
 }
 
 private fun mb(bytes: Long): String = if (bytes <= 0) "small" else "${(bytes + 500_000) / 1_000_000} MB"
-
-@Composable
-private fun DescribeBox(vm: LightCraftViewModel, ai: AiModelStatus) {
-    if (!ai.installed) {
-        AiModelCard(vm, ai)
-        return
-    }
-    var text by rememberSaveable { mutableStateOf("") }
-    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            Modifier.weight(1f).height(36.dp).clip(RoundedCornerShape(4.dp)).background(Lc.field).border(1.dp, Lc.fieldBorder, RoundedCornerShape(4.dp)).padding(horizontal = 10.dp),
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            if (text.isEmpty()) Text("sky, trees, the red car…", fontFamily = Inter, fontSize = 14.sp, color = Lc.dim)
-            BasicTextField(
-                value = text,
-                onValueChange = { text = it.take(120) },
-                singleLine = true,
-                textStyle = TextStyle(fontFamily = Inter, fontSize = 14.sp, color = Lc.text),
-                cursorBrush = SolidColor(Lc.accent),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { vm.describe(text) }),
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        Spacer(Modifier.width(8.dp))
-        LcButton("Select", on = text.isNotBlank()) { vm.describe(text) }
-    }
-}
-
-/** What Object and Describe need: the optional SAM 3 model, its size, licence and memory. */
-@Composable
-private fun AiModelCard(vm: LightCraftViewModel, ai: AiModelStatus) {
-    val context = LocalContext.current
-    val ramGb = remember { phoneMemoryGb(context) }
-    val enough = ramGb >= MIN_AI_RAM_GB
-    var confirm by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
-        Text("AI object selection", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Lc.text)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            if (enough) {
-                "Uses Meta's SAM 3 model on this phone. It is an optional ${gb(ai.sizeBytes)} download (${ai.license}, not LightCraft's); the first selection on a photo can take a minute." +
-                    if (ramGb < COMFORT_AI_RAM_GB) " With $ramGb GB of memory Android may close LightCraft during a selection; your edits are kept." else ""
-            } else {
-                "SAM 3 needs a phone with $MIN_AI_RAM_GB GB of memory or more; this one has $ramGb GB. Subject, Background and Sky still work on any phone."
-            },
-            fontFamily = Inter, fontSize = 12.sp, color = Lc.label,
-        )
-        if (ai.downloading) {
-            Spacer(Modifier.height(8.dp))
-            val f = if (ai.total > 0) ai.done.toFloat() / ai.total else 0f
-            LinearProgressIndicator(progress = { f }, Modifier.fillMaxWidth().height(2.dp), color = Lc.accent, trackColor = Lc.track)
-            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("${gb(ai.done)} of ${gb(ai.total.takeIf { it > 0 } ?: ai.sizeBytes)}", style = Numbers, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.weight(1f))
-                LcButton("Cancel", onClick = vm::cancelAiDownload)
-            }
-        } else if (enough) {
-            Spacer(Modifier.height(8.dp))
-            Row {
-                LcButton("Download ${gb(ai.sizeBytes)}", on = true) { confirm = true }
-                Spacer(Modifier.width(8.dp))
-                LcButton("Manage Downloads") { vm.openPage(Page.Downloads) }
-            }
-            ai.error?.let { Text(it, fontFamily = Inter, fontSize = 12.sp, color = Lc.reject, modifier = Modifier.padding(top = 6.dp)) }
-        }
-    }
-    if (confirm) {
-        AlertDialog(
-            onDismissRequest = { confirm = false },
-            containerColor = Lc.chrome,
-            title = { Text("Download SAM 3?", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Lc.text) },
-            text = {
-                Text(
-                    "About ${gb(ai.sizeBytes)} from the model's public mirrors, under Meta's ${ai.license}. Use Wi-Fi. It stays in LightCraft's private storage; clearing the app's data removes it.",
-                    fontFamily = Inter, fontSize = 14.sp, color = Lc.label,
-                )
-            },
-            confirmButton = { TextButton(onClick = { confirm = false; vm.downloadAiModel() }) { Text("Download", color = Lc.accent, fontFamily = Inter) } },
-            dismissButton = { TextButton(onClick = { confirm = false }) { Text("Not Now", color = Lc.label, fontFamily = Inter) } },
-        )
-    }
-}
 
 /** SAM 3 is offered on phones with this much memory or more (5 GB phones get a warning). */
 internal const val MIN_AI_RAM_GB = 5
