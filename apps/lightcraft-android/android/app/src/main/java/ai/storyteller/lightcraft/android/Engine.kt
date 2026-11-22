@@ -13,6 +13,31 @@ data class EraseSettings(
     val opacity: Float = 100f,
 )
 
+/** A photo's tone distribution: 256 bins per channel and the share of clipped pixels (0..1). */
+class Histogram(val r: IntArray, val g: IntArray, val b: IntArray, val luma: IntArray, val shadowsClipped: Float, val highlightsClipped: Float) {
+    companion object {
+        fun of(v: IntArray): Histogram {
+            require(v.size == 4 * 256 + 2) { "bad histogram (${v.size} values)" }
+            return Histogram(
+                v.copyOfRange(0, 256), v.copyOfRange(256, 512), v.copyOfRange(512, 768), v.copyOfRange(768, 1024),
+                v[1024] / 1000f, v[1025] / 1000f,
+            )
+        }
+    }
+}
+
+/** What the library knows about a gallery file: its photo id, rating, flag and whether it has edits. */
+data class Mark(val path: String, val id: Long, val rating: Int, val flag: String, val edited: Boolean) {
+    val favourite: Boolean get() = flag == "pick"
+
+    companion object {
+        fun fromJson(o: org.json.JSONObject): Mark? {
+            val path = o.optString("path").takeIf { it.isNotEmpty() } ?: return null
+            return Mark(path, o.optLong("id"), o.optInt("rating"), o.optString("flag", "none"), o.optBoolean("edited"))
+        }
+    }
+}
+
 /** An engine command failed; [kind] is the engine's error kind (`BadParams`, `UnknownCommand`…). */
 class EngineException(val kind: String, message: String) : Exception(message)
 
@@ -64,13 +89,17 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
     fun viewToMask(photo: Long, mask: Long, points: FloatArray): FloatArray = nativeViewToMask(live(), photo, mask, points)
 
     /** Points on the shown photo (0..1) in the corrected frame: where spots and red-eye fixes are stored. */
-    fun viewToImage(photo: Long, points: FloatArray): FloatArray = nativeViewToImage(live(), photo, points)
+    fun viewToCorrected(photo: Long, points: FloatArray): FloatArray = nativeViewToCorrected(live(), photo, points)
 
     /** Mask coordinates → the shown photo (0..1); NaN for a point that has no place in it. */
     fun maskToView(photo: Long, mask: Long, points: FloatArray): FloatArray = nativeMaskToView(live(), photo, mask, points)
 
     /** Width ÷ height of the space radial masks measure radii in (long-edge units). */
     fun maskAspect(photo: Long): Double = nativeMaskAspect(live(), photo)
+
+    /** [photo] with its edits but without its crop (the crop tool's view). */
+    fun renderUncropped(photo: Long, maxW: Int, maxH: Int, draft: Boolean = false): Bitmap =
+        bitmap(nativeRenderUncropped(live(), photo, maxW, maxH, draft))
 
     /** A grid thumbnail whose long edge is at least [longEdge]. */
     fun thumbnail(photo: Long, longEdge: Int): Bitmap = bitmap(nativeThumbnail(live(), photo, longEdge))
@@ -106,6 +135,26 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
     fun cutoutExport(dir: String, name: String, refine: Boolean): String = nativeCutoutExport(live(), dir, name, refine)
     fun cutoutEnd() = nativeCutoutEnd(live())
 
+    /** The tone histogram of [photo] with its edits, from a fast render at [longEdge]. */
+    fun histogram(photo: Long, longEdge: Int = 256): Histogram = Histogram.of(nativeHistogram(live(), photo, longEdge))
+
+    /** Edited / flag / rating of every gallery file the library knows, by path. */
+    fun galleryMarks(): Map<String, Mark> {
+        val arr = runCatching { org.json.JSONArray(nativeGalleryMarks(live())) }.getOrNull() ?: return emptyMap()
+        return (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(Mark::fromJson) }.associateBy { it.path }
+    }
+
+    /** Gallery files that were deleted: drop their photos and edits from the library. */
+    fun forgetPaths(paths: List<String>): Int =
+        if (paths.isEmpty()) 0 else nativeForgetPaths(live(), paths.filter { '\n' !in it }.joinToString("\n"))
+
+    /** A point of the shown photo ([u], [v] 0..1 over the rendered frame) → the uncropped photo's normalized point. */
+    fun viewToImage(photo: Long, u: Float, v: Float): Pair<Float, Float>? =
+        nativeViewToImage(live(), photo, u, v)?.takeIf { it.size == 2 }?.let { it[0] to it[1] }
+
+    /** Where downloaded AI models (SAM 3) live. */
+    fun setModelsDir(dir: String) = nativeSetModelsDir(live(), dir)
+
     override fun close() {
         if (handle != 0L) nativeRelease(handle)
         handle = 0L
@@ -140,6 +189,7 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativePhotoForPath(handle: Long, path: String): Long
         @JvmStatic private external fun nativePhotos(handle: Long): LongArray
         @JvmStatic private external fun nativeRender(handle: Long, photo: Long, maxW: Int, maxH: Int, before: Boolean, draft: Boolean): IntArray
+        @JvmStatic private external fun nativeRenderUncropped(handle: Long, photo: Long, maxW: Int, maxH: Int, draft: Boolean): IntArray
         @JvmStatic private external fun nativeThumbnail(handle: Long, photo: Long, longEdge: Int): IntArray
         @JvmStatic private external fun nativePresetThumbnail(handle: Long, photo: Long, preset: String, longEdge: Int): IntArray
         @JvmStatic private external fun nativeAddSegMask(handle: Long, name: String, side: Int, probs: FloatArray, invert: Boolean): String
@@ -147,7 +197,7 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeCutoutMatte(handle: Long, side: Int, probs: FloatArray, invert: Boolean)
         @JvmStatic private external fun nativeCutoutErase(handle: Long, x: Float, y: Float, tolerance: Float, contiguous: Boolean, sample: Int, antiAlias: Boolean, feather: Float, opacity: Float): Int
         @JvmStatic private external fun nativeRenderMasked(handle: Long, photo: Long, maxW: Int, maxH: Int, mask: Long, draft: Boolean): IntArray
-        @JvmStatic private external fun nativeViewToImage(handle: Long, photo: Long, points: FloatArray): FloatArray
+        @JvmStatic private external fun nativeViewToCorrected(handle: Long, photo: Long, points: FloatArray): FloatArray
         @JvmStatic private external fun nativeViewToMask(handle: Long, photo: Long, mask: Long, points: FloatArray): FloatArray
         @JvmStatic private external fun nativeMaskToView(handle: Long, photo: Long, mask: Long, points: FloatArray): FloatArray
         @JvmStatic private external fun nativeMaskAspect(handle: Long, photo: Long): Double
@@ -159,6 +209,15 @@ class Engine private constructor(private var handle: Long) : AutoCloseable {
         @JvmStatic private external fun nativeCutoutFrame(handle: Long): IntArray
         @JvmStatic private external fun nativeCutoutExport(handle: Long, dir: String, name: String, refine: Boolean): String
         @JvmStatic private external fun nativeCutoutEnd(handle: Long)
+        /** Whether this build includes AI masks (SAM 3 Object and Describe). */
+        val aiMasksAvailable: Boolean get() = runCatching { nativeAiMasksAvailable() }.getOrDefault(false)
+
+        @JvmStatic private external fun nativeHistogram(handle: Long, photo: Long, longEdge: Int): IntArray
+        @JvmStatic private external fun nativeGalleryMarks(handle: Long): String
+        @JvmStatic private external fun nativeForgetPaths(handle: Long, paths: String): Int
+        @JvmStatic private external fun nativeViewToImage(handle: Long, photo: Long, u: Float, v: Float): FloatArray?
+        @JvmStatic private external fun nativeSetModelsDir(handle: Long, dir: String)
+        @JvmStatic private external fun nativeAiMasksAvailable(): Boolean
         @JvmStatic private external fun nativeExport(handle: Long, photo: Long, options: String, dir: String): String
     }
 }

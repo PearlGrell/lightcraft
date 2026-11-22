@@ -1,8 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.LightCraft" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#FF121212</item>
+        <item name="android:windowBackground">@color/lc_canvas</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <!-- The launch screen: the lynx tile on the app's espresso canvas while the engine opens the
+         library (MainActivity keeps it up until then, at most ~1.5 s). -->
+    <style name="Theme.LightCraft.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/lc_canvas</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash</item>
+        <item name="windowSplashScreenAnimationDuration">300</item>
+        <item name="postSplashScreenTheme">@style/Theme.LightCraft</item>
     </style>
 </resources>

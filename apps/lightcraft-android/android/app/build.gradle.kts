@@ -28,6 +28,14 @@ val cargoNdk by tasks.registering(Exec::class) {
     outputs.upToDateWhen { false }
 }
 
+// The UI font is the desktop app's Inter (assets/fonts, OFL), copied into generated resources at
+// build time so the repository keeps one copy of each font file.
+val interFonts by tasks.registering(Copy::class) {
+    from(workspaceDir.resolve("assets/fonts")) { include("Inter-*.ttf") }
+    into(layout.buildDirectory.dir("generated/fontRes/font"))
+    rename { it.lowercase().replace('-', '_') }
+}
+
 android {
     namespace = "ai.storyteller.lightcraft.android"
     compileSdk = 35
@@ -37,9 +45,24 @@ android {
         applicationId = "ai.storyteller.lightcraft.android"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.8.0"
+        versionCode = 19
+        versionName = "0.16.3"
         ndk { abiFilters += rustAbis }
+    }
+
+    // Release APKs are signed with the key named in LIGHTCRAFT_KEYSTORE (CI decodes it from the
+    // ANDROID_KEYSTORE_BASE64 secret), so every build installs over the last; without one they fall
+    // back to the machine's debug key. The key never lives in the repository.
+    val releaseKey = System.getenv("LIGHTCRAFT_KEYSTORE")?.takeIf { it.isNotBlank() }
+    signingConfigs {
+        if (releaseKey != null) {
+            create("lightcraft") {
+                storeFile = file(releaseKey)
+                storePassword = System.getenv("LIGHTCRAFT_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("LIGHTCRAFT_KEY_ALIAS")
+                keyPassword = System.getenv("LIGHTCRAFT_KEY_PASSWORD") ?: System.getenv("LIGHTCRAFT_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -47,11 +70,11 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // unsigned unless the build supplies a key; debug-signed so a CI artifact installs
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (releaseKey != null) "lightcraft" else "debug")
         }
     }
     sourceSets["main"].jniLibs.srcDir(rustJniLibs)
+    sourceSets["main"].res.srcDir(layout.buildDirectory.dir("generated/fontRes"))
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -60,10 +83,12 @@ android {
     buildFeatures { compose = true }
 }
 
-tasks.named("preBuild") { dependsOn(cargoNdk) }
+tasks.named("preBuild") { dependsOn(cargoNdk, interFonts) }
 
 dependencies {
     implementation(libs.androidx.core.ktx)
+    // the launch screen (the lynx on espresso) on every Android version the app supports
+    implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)

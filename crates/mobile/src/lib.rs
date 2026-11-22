@@ -240,7 +240,7 @@ impl Mobile {
     /// Points on the rendered photo (0..1) in the corrected frame's coordinates (after lens
     /// corrections and Upright, before the crop): where spots, red-eye fixes and generative
     /// removes are stored.
-    pub fn view_to_image(&self, photo: u64, points: &[[f64; 2]]) -> Result<Vec<[f64; 2]>, String> {
+    pub fn view_to_corrected(&self, photo: u64, points: &[[f64; 2]]) -> Result<Vec<[f64; 2]>, String> {
         let (frame, _) = self.mask_frame(photo, None)?;
         let frame = frame.for_mask(false);
         let (w, h) = frame.fit(MAP_EDGE, MAP_EDGE);
@@ -320,6 +320,14 @@ impl Mobile {
             s.render_job(PhotoId(photo), w, h, false, true).ok_or_else(|| format!("no photo {photo}"))?
         };
         let job = job.with_overlay(Overlay::Mask { id, view: MaskView::Color, color: OVERLAY_RED, opacity: 50 });
+        run(if draft { job.draft() } else { job })
+    }
+
+    /// `photo` with its edits but without its crop, fitted into `max_w × max_h`: what the crop
+    /// tool draws its frame over (crop rectangles are normalized to this uncropped photo).
+    pub fn render_uncropped(&self, photo: u64, max_w: u32, max_h: u32, draft: bool) -> Result<Frame, String> {
+        let (w, h) = (clamp_edge(max_w)?, clamp_edge(max_h)?);
+        let job = self.lock().loupe_job(PhotoId(photo), w, h, false).ok_or_else(|| format!("no photo {photo}"))?;
         run(if draft { job.draft() } else { job })
     }
 
@@ -523,6 +531,149 @@ fn seg_json(side: u32, probs: &[f32], invert: bool) -> Result<Value, String> {
         .collect();
     let seg = lightcraft_engine::develop::SegMask::from_logits(side, &logits);
     serde_json::to_value(seg).map_err(|e| failure("Other", &e.to_string()))
+}
+
+/// A photo's tone distribution as the editor's histogram shows it: 256 bins per channel over the
+/// display-encoded (sRGB) render, plus the share of pixels clipped to black or white.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Histo {
+    pub r: Vec<u32>,
+    pub g: Vec<u32>,
+    pub b: Vec<u32>,
+    pub luma: Vec<u32>,
+    /// Fraction (0..1) of samples with any channel at 0.
+    pub shadows_clipped: f32,
+    /// Fraction (0..1) of samples with any channel at 255.
+    pub highlights_clipped: f32,
+}
+
+impl Histo {
+    /// The histogram of a rendered frame (its alpha is ignored; fully transparent pixels are skipped).
+    pub fn of(frame: &Frame) -> Histo {
+        let w = frame.width as usize;
+        let h = frame.height as usize;
+        let mut img = lightcraft_raster::Rgba8::new(0, 0);
+        let mut low = 0u32;
+        let mut high = 0u32;
+        let mut data = Vec::with_capacity(w.saturating_mul(h).min(frame.rgba.len() / 4));
+        for p in frame.rgba.chunks_exact(4) {
+            let (Some(&r), Some(&g), Some(&b), Some(&a)) = (p.first(), p.get(1), p.get(2), p.get(3)) else { continue };
+            if a == 0 {
+                continue;
+            }
+            if r == 0 || g == 0 || b == 0 {
+                low += 1;
+            }
+            if r == 255 || g == 255 || b == 255 {
+                high += 1;
+            }
+            data.push([r, g, b, a]);
+        }
+        let n = data.len();
+        img.width = n;
+        img.height = usize::from(n > 0);
+        img.data = data;
+        let hist = lightcraft_raster::histogram::Histogram::of_srgb8(&img);
+        let total = (n as f32).max(1.0);
+        Histo { r: hist.r, g: hist.g, b: hist.b, luma: hist.luma, shadows_clipped: low as f32 / total, highlights_clipped: high as f32 / total }
+    }
+
+    /// `[r×256, g×256, b×256, luma×256, shadows‰, highlights‰]`, the flat form the JNI layer hands over.
+    pub fn to_ints(&self) -> Vec<i32> {
+        let mut out = Vec::with_capacity(4 * 256 + 2);
+        for ch in [&self.r, &self.g, &self.b, &self.luma] {
+            out.extend((0..256).map(|i| ch.get(i).map_or(0, |v| i32::try_from(*v).unwrap_or(i32::MAX))));
+        }
+        out.push((self.shadows_clipped * 1000.0).round() as i32);
+        out.push((self.highlights_clipped * 1000.0).round() as i32);
+        out
+    }
+}
+
+impl Mobile {
+    /// The histogram of `photo` with its edits, from a fast render whose long edge is `long_edge`.
+    pub fn histogram(&self, photo: u64, long_edge: u32) -> Result<Histo, String> {
+        let edge = clamp_edge(long_edge)?;
+        let frame = self.render(photo, edge as u32, edge as u32, false, true)?;
+        Ok(Histo::of(&frame))
+    }
+
+    /// What the phone's gallery grid marks on each photo the library knows: a JSON array of
+    /// `{"path", "id", "rating", "flag": "pick"|"reject"|"none", "edited": bool}` for every
+    /// (not deleted) photo imported from a file.
+    pub fn gallery_marks(&self) -> String {
+        let s = self.lock();
+        let plain = lightcraft_engine::develop::DevelopSettings::default();
+        let marks: Vec<Value> = s
+            .catalog
+            .photos()
+            .filter(|p| !p.deleted)
+            .filter_map(|p| match &p.source {
+                Source::File { path } => Some(json!({
+                    "path": path,
+                    "id": p.id.0,
+                    "rating": p.rating,
+                    "flag": match p.flag {
+                        lightcraft_engine::catalog::Flag::Pick => "pick",
+                        lightcraft_engine::catalog::Flag::Reject => "reject",
+                        lightcraft_engine::catalog::Flag::None => "none",
+                    },
+                    "edited": *p.develop != plain,
+                })),
+                _ => None,
+            })
+            .collect();
+        Value::Array(marks).to_string()
+    }
+
+    /// A point of the photo as the editor shows it (`u`, `v`: 0..1 across the rendered, cropped and
+    /// rotated frame) → the normalized point of the uncropped photo that masks, brush strokes and
+    /// Object clicks use. `None` for a photo the library lacks or a point that maps nowhere.
+    pub fn view_to_image(&self, photo: u64, u: f32, v: f32) -> Option<(f32, f32)> {
+        if !u.is_finite() || !v.is_finite() {
+            return None;
+        }
+        let s = self.lock();
+        let p = s.catalog.photo(PhotoId(photo))?;
+        let frame = lightcraft_engine::pipeline::geometry::Frame::with_lens(
+            p.width.max(1) as usize,
+            p.height.max(1) as usize,
+            &p.develop,
+            true,
+            p.embedded_lens.as_ref(),
+        );
+        let (w, h) = frame.native_size();
+        let px = |x: f64| if x.is_finite() { x.round().clamp(1.0, 1e9) as usize } else { 1 };
+        let (w, h) = (px(w), px(h));
+        let q = frame.out_to_norm(w, h).apply(lightcraft_geom::Point::new(f64::from(u) * w as f64, f64::from(v) * h as f64));
+        (q.x.is_finite() && q.y.is_finite()).then_some((q.x as f32, q.y as f32))
+    }
+
+    /// Keep downloaded AI models (SAM 3) under `dir`, the app's private files folder. Commands then
+    /// wait for their AI results instead of queueing them (the app runs commands off its UI thread).
+    pub fn set_models_dir(&self, dir: &str) {
+        let mut s = self.lock();
+        s.segmenter.dir = Some(std::path::Path::new(dir).join("sam3"));
+        s.segmenter.background = false;
+    }
+
+    /// Whether this build can run AI masks (Object and Describe) at all.
+    pub fn ai_masks_available() -> bool {
+        lightcraft_engine::segment::Segmenter::AVAILABLE
+    }
+
+    /// The gallery files at `paths` were deleted from the phone: drop their photos (and edits) from
+    /// the library. Paths the library doesn't know are ignored. Returns how many photos went.
+    pub fn forget_paths(&self, paths: &[String]) -> Result<usize, String> {
+        let mut s = self.lock();
+        let ids: Vec<u64> =
+            s.catalog.photos().filter(|p| matches!(&p.source, Source::File { path } if paths.iter().any(|q| q == path))).map(|p| p.id.0).collect();
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        s.execute("photo.deletePermanently", &json!({"ids": ids})).map_err(|e| e.to_string())?;
+        Ok(ids.len())
+    }
 }
 
 fn clamp_edge(edge: u32) -> Result<usize, String> {
@@ -913,6 +1064,115 @@ mod tests {
         assert_eq!(m.photos(), vec![id]);
         assert!(m.render(id, 64, 64, false, false).is_ok());
         assert!(m.photo_for_path(dir.join("missing.jpg").to_str().unwrap()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn histogram_counts_every_opaque_pixel_and_clipping() {
+        // 2 black, 1 white, 1 mid grey, 1 transparent
+        let px: [[u8; 4]; 5] = [[0, 0, 0, 255], [0, 0, 0, 255], [255, 255, 255, 255], [128, 128, 128, 255], [200, 10, 10, 0]];
+        let f = Frame { width: 5, height: 1, rgba: px.iter().flatten().copied().collect() };
+        let h = Histo::of(&f);
+        assert_eq!(h.luma.iter().sum::<u32>(), 4);
+        assert_eq!(h.r[0], 2);
+        assert_eq!(h.r[255], 1);
+        assert!((h.shadows_clipped - 0.5).abs() < 1e-6);
+        assert!((h.highlights_clipped - 0.25).abs() < 1e-6);
+        let ints = h.to_ints();
+        assert_eq!(ints.len(), 4 * 256 + 2);
+        assert_eq!(ints[4 * 256], 500);
+        assert_eq!(ints[4 * 256 + 1], 250);
+    }
+
+    #[test]
+    fn histogram_of_odd_or_empty_frames_does_not_panic() {
+        let empty = Histo::of(&Frame { width: 0, height: 0, rgba: vec![] });
+        assert_eq!(empty.luma.iter().sum::<u32>(), 0);
+        assert_eq!(empty.shadows_clipped, 0.0);
+        // a frame whose buffer is shorter than its size says, and a trailing partial pixel
+        let short = Histo::of(&Frame { width: 100, height: 100, rgba: vec![9, 9, 9, 255, 1, 2] });
+        assert_eq!(short.luma.iter().sum::<u32>(), 1);
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        let h = m.histogram(id, 96).unwrap();
+        assert!(h.luma.iter().sum::<u32>() > 0);
+        assert!(m.histogram(id, 0).is_err());
+        assert!(m.histogram(999_999, 64).is_err());
+    }
+
+    #[test]
+    fn gallery_marks_track_edits_and_flags_and_forget_drops_deleted_files() {
+        let dir = std::env::temp_dir().join(format!("lightcraft-mobile-marks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let demo = Mobile::demo();
+        let a = demo.export(demo.photos()[0], r#"{"format":"jpeg","width":96}"#, dir.join("dcim/a").to_str().unwrap()).unwrap();
+        let b = demo.export(demo.photos()[1], r#"{"format":"jpeg","width":96}"#, dir.join("dcim/b").to_str().unwrap()).unwrap();
+        let m = Mobile::new();
+        m.open_library(dir.join("lib").to_str().unwrap(), false).unwrap();
+        let ia = m.photo_for_path(&a).unwrap();
+        let ib = m.photo_for_path(&b).unwrap();
+        let marks = parse(&m.gallery_marks());
+        assert_eq!(marks.as_array().unwrap().len(), 2);
+        assert!(marks.as_array().unwrap().iter().all(|x| x["edited"] == false && x["flag"] == "none"));
+
+        parse(&m.execute("library.select", &json!({"ids": [ia], "active": ia}).to_string()));
+        assert_eq!(parse(&m.execute("develop.set", r#"{"control":"light.exposure","value":0.5}"#))["ok"], true);
+        assert_eq!(parse(&m.execute("photo.flag", &json!({"ids": [ib], "flag": "pick"}).to_string()))["ok"], true);
+        let marks = parse(&m.gallery_marks());
+        let of = |id: u64| marks.as_array().unwrap().iter().find(|x| x["id"] == id).unwrap().clone();
+        assert_eq!(of(ia)["edited"], true);
+        assert_eq!(of(ib)["flag"], "pick");
+        assert_eq!(of(ib)["path"], b.as_str());
+
+        assert_eq!(m.forget_paths(&[a.clone(), dir.join("never-imported.jpg").to_string_lossy().into_owned()]).unwrap(), 1);
+        assert_eq!(m.photos(), vec![ib]);
+        assert_eq!(m.forget_paths(&[]).unwrap(), 0);
+        assert_eq!(parse(&m.gallery_marks()).as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_uncropped_render_ignores_the_crop() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        let full = m.render(id, 400, 400, false, false).unwrap();
+        assert_eq!(parse(&m.execute("crop.set", r#"{"rect":[0.0,0.0,0.5,1.0]}"#))["ok"], true);
+        let cropped = m.render(id, 400, 400, false, false).unwrap();
+        let uncropped = m.render_uncropped(id, 400, 400, false).unwrap();
+        let aspect = |f: &Frame| f.width as f32 / f.height as f32;
+        assert!((aspect(&uncropped) - aspect(&full)).abs() < 0.02, "{} vs {}", aspect(&uncropped), aspect(&full));
+        assert!((aspect(&cropped) - aspect(&full) / 2.0).abs() < 0.05, "the crop halves the width");
+        assert!(m.render_uncropped(999_999, 64, 64, false).is_err());
+        assert!(m.render_uncropped(id, 0, 64, false).is_err());
+    }
+
+    #[test]
+    fn view_points_map_to_the_uncropped_photo() {
+        let m = Mobile::demo();
+        let id = m.photos()[0];
+        let (x, y) = m.view_to_image(id, 0.5, 0.5).unwrap();
+        assert!((x - 0.5).abs() < 1e-3 && (y - 0.5).abs() < 1e-3, "{x} {y}");
+        parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        assert_eq!(parse(&m.execute("crop.set", r#"{"rect":[0.5,0.5,1.0,1.0]}"#))["ok"], true);
+        let (x, y) = m.view_to_image(id, 0.0, 0.0).unwrap();
+        assert!((x - 0.5).abs() < 1e-3 && (y - 0.5).abs() < 1e-3, "the cropped view starts mid-photo: {x} {y}");
+        assert!(m.view_to_image(id, f32::NAN, 0.5).is_none());
+        assert!(m.view_to_image(999_999, 0.5, 0.5).is_none());
+    }
+
+    #[test]
+    fn ai_masks_without_the_model_are_an_error_not_a_panic() {
+        let dir = std::env::temp_dir().join(format!("lightcraft-mobile-sam-{}", std::process::id()));
+        let m = Mobile::demo();
+        m.set_models_dir(dir.to_str().unwrap());
+        let id = m.photos()[0];
+        parse(&m.execute("library.select", &json!({"ids": [id], "active": id}).to_string()));
+        let r = parse(&m.execute("mask.add", r#"{"kind":"object","points":[[0.5,0.5]]}"#));
+        assert_eq!(r["ok"], false, "{r}");
+        let st = parse(&m.execute("segment.model.status", ""));
+        assert_eq!(st["ok"], true, "{st}");
+        let _ = Mobile::ai_masks_available();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

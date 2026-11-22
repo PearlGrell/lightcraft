@@ -1,6 +1,11 @@
 package ai.storyteller.lightcraft.android
 
+import android.content.Context
 import android.graphics.Bitmap
+import com.google.android.gms.common.moduleinstall.InstallStatusListener
+import com.google.android.gms.common.moduleinstall.ModuleInstall
+import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
+import com.google.android.gms.common.moduleinstall.ModuleInstallStatusUpdate
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
@@ -17,6 +22,40 @@ object Segmenter {
 
     private val segmenter by lazy {
         SubjectSegmentation.getClient(SubjectSegmenterOptions.Builder().enableForegroundConfidenceMask().build())
+    }
+
+    /** Whether Google Play services has the segmentation model on the phone (blocks; off the main thread). */
+    fun installed(context: Context): Boolean = runCatching {
+        Tasks.await(ModuleInstall.getClient(context).areModulesAvailable(segmenter), 20, TimeUnit.SECONDS).areModulesAvailable()
+    }.getOrDefault(false)
+
+    /**
+     * Ask Play services to download the model now (it otherwise comes with the first use).
+     * [progress] gets 0..1 while it downloads; [done] the outcome (null = installed, else why not).
+     */
+    fun install(context: Context, progress: (Float) -> Unit, done: (String?) -> Unit) {
+        val client = ModuleInstall.getClient(context)
+        val listener = object : InstallStatusListener {
+            override fun onInstallStatusUpdated(update: ModuleInstallStatusUpdate) {
+                update.progressInfo?.let { p -> if (p.totalBytesToDownload > 0) progress(p.bytesDownloaded.toFloat() / p.totalBytesToDownload) }
+                when (update.installState) {
+                    ModuleInstallStatusUpdate.InstallState.STATE_COMPLETED -> { client.unregisterListener(this); done(null) }
+                    ModuleInstallStatusUpdate.InstallState.STATE_FAILED, ModuleInstallStatusUpdate.InstallState.STATE_CANCELED -> {
+                        client.unregisterListener(this); done("the download stopped (error ${update.errorCode})")
+                    }
+                    else -> {}
+                }
+            }
+        }
+        val request = ModuleInstallRequest.newBuilder().addApi(segmenter).setListener(listener).build()
+        client.installModules(request)
+            .addOnSuccessListener { r -> if (r.areModulesAlreadyInstalled()) { client.unregisterListener(listener); done(null) } }
+            .addOnFailureListener { e -> client.unregisterListener(listener); done(e.message ?: "Google Play services could not download it") }
+    }
+
+    /** Tell Play services LightCraft no longer needs the model; the system may then remove it. */
+    fun release(context: Context) {
+        runCatching { ModuleInstall.getClient(context).releaseModules(segmenter) }
     }
 
     /** Blocks (call off the main thread); throws with the reason when the model isn't available. */

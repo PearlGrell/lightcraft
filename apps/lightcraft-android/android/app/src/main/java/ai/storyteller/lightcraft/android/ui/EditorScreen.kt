@@ -4,88 +4,46 @@ import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.Redo
-import androidx.compose.material.icons.automirrored.outlined.RotateLeft
-import androidx.compose.material.icons.automirrored.outlined.RotateRight
-import androidx.compose.material.icons.automirrored.outlined.Undo
-import androidx.compose.material.icons.outlined.AutoAwesome
-import androidx.compose.material.icons.outlined.AutoFixHigh
-import androidx.compose.material.icons.outlined.BlurOn
-import androidx.compose.material.icons.outlined.Brightness6
-import androidx.compose.material.icons.outlined.Brush
-import androidx.compose.material.icons.outlined.Palette
-import androidx.compose.material.icons.outlined.CameraAlt
-import androidx.compose.material.icons.outlined.Cloud
-import androidx.compose.material.icons.outlined.Contrast
-import androidx.compose.material.icons.outlined.ContentCut
-import androidx.compose.material.icons.outlined.Crop
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Details
-import androidx.compose.material.icons.outlined.Flip
-import androidx.compose.material.icons.outlined.Gradient
-import androidx.compose.material.icons.outlined.InvertColors
-import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.RadioButtonUnchecked
-import androidx.compose.material.icons.outlined.RestartAlt
-import androidx.compose.material.icons.outlined.Restore
-import androidx.compose.material.icons.outlined.SaveAlt
-import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.Straighten
-import androidx.compose.material.icons.outlined.Style
-import androidx.compose.material.icons.outlined.Healing
-import androidx.compose.material.icons.outlined.Thermostat
-import androidx.compose.material.icons.outlined.TouchApp
-import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material.icons.outlined.Vignette
-import androidx.compose.material.icons.outlined.Visibility
-import androidx.compose.material.icons.outlined.VisibilityOff
-import androidx.compose.material.icons.outlined.Wallpaper
-import androidx.compose.material.icons.outlined.WbSunny
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -98,34 +56,28 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import ai.storyteller.lightcraft.android.Control
-import ai.storyteller.lightcraft.android.EraseSettings
-import ai.storyteller.lightcraft.android.GroupStyle
 import ai.storyteller.lightcraft.android.LightCraftViewModel
 import ai.storyteller.lightcraft.android.MainTab
-import ai.storyteller.lightcraft.android.Tool
 import ai.storyteller.lightcraft.android.ToolKind
-import ai.storyteller.lightcraft.android.Tools
 
 /**
- * The editor: the photo edge to edge on black with a few icons over its top corner (back; undo,
- * redo, compare, share), and at the bottom the open tool's panel, a row of labelled tools, and the
- * bar of the six main tabs (Quick edit, Presets, Crop, Edit, Masking, Remove).
+ * The editor, laid out as the desktop's develop view for a phone: a top bar (back to the library,
+ * the file name, undo, redo, before / after, info, share, more), the photo on the canvas, the open
+ * tool's panel under it (the desktop's right panel: histogram, Edit, Profile, sections), and the
+ * tool rail (Edit, Crop, Remove, Masking, Presets). Tap the open tool again to hide its panel.
  */
 @Composable
 fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostState) {
@@ -135,113 +87,329 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
     val tab by vm.tab.collectAsStateWithLifecycle()
     val tool by vm.tool.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
+    val brush by vm.brush.collectAsStateWithLifecycle()
+    val activeMask by vm.activeMask.collectAsStateWithLifecycle()
+    val objectExclude by vm.objectExclude.collectAsStateWithLifecycle()
+    val wbPicking by vm.wbPicking.collectAsStateWithLifecycle()
+    val ai by vm.ai.collectAsStateWithLifecycle()
     var compare by remember(photo) { mutableStateOf(false) }
     var split by remember(photo) { mutableFloatStateOf(0.5f) }
     var holding by remember { mutableStateOf(false) }
     var zoom by remember(photo) { mutableFloatStateOf(1f) }
     var pan by remember(photo) { mutableStateOf(Offset.Zero) }
     var area by remember { mutableStateOf(IntSize.Zero) }
+    var sheet by remember { mutableStateOf<String?>(null) }
+    var panelOpen by rememberSaveable { mutableStateOf(true) }
+    // the filmstrip starts folded away: the rail's filmstrip button opens it
+    var stripOpen by rememberSaveable { mutableStateOf(false) }
+    var panelShare by rememberSaveable { mutableFloatStateOf(0.46f) }
+    val stroke = remember { mutableStateListOf<Offset>() }
     val removing = tab == MainTab.Remove
+    val painting = tab == MainTab.Masking && tool?.kind == ToolKind.Brush && activeMask != null
+    val tapping = tab == MainTab.Masking && tool?.kind == ToolKind.Object && ai.installed
+    val picking = wbPicking && tab == MainTab.Edit
+    val cropping = tab == MainTab.Crop
+    val cropView by vm.cropView.collectAsStateWithLifecycle()
+    val cropRatio by vm.cropRatio.collectAsStateWithLifecycle()
+    val look by vm.look.collectAsStateWithLifecycle()
+    val fixed = painting || tapping || picking || cropping
+    if (fixed && zoom != 1f) {
+        zoom = 1f
+        pan = Offset.Zero
+    }
 
-    Column(Modifier.fillMaxSize().background(Lc.canvas)) {
-        Box(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .onSizeChanged {
-                    area = it
-                    vm.setViewport(it.width, it.height)
-                },
-        ) {
-            val shown: Bitmap? = when {
-                removing -> cutout ?: preview
-                holding -> before ?: preview
-                else -> preview
-            }
-            val fit = shown?.let { fitRect(it.width, it.height, area) }
+    BoxWithConstraints(Modifier.fillMaxSize().background(Lc.canvas)) {
+        val panelHeight = maxHeight * panelShare
+        val fullHeight = maxHeight
+        Column(Modifier.fillMaxSize()) {
+            TopBar(vm, compare, busy, onCompare = { compare = !compare; if (compare) vm.loadBefore() }, onSheet = { sheet = it })
             Box(
                 Modifier
-                    .fillMaxSize()
-                    .pointerInput(photo, removing) {
-                        if (!removing) {
-                            detectTransformGestures { _, p, z, _ ->
-                                zoom = (zoom * z).coerceIn(1f, 8f)
-                                pan = if (zoom == 1f) Offset.Zero else pan + p
-                            }
-                        }
-                    }
-                    .pointerInput(photo, removing, fit) {
-                        detectTapGestures(
-                            onDoubleTap = {
-                                if (!removing) {
-                                    zoom = if (zoom > 1f) 1f else 2.5f
-                                    pan = Offset.Zero
-                                }
-                            },
-                            onTap = { o ->
-                                val r = fit ?: return@detectTapGestures
-                                if (removing && tool?.id == "eraser" && r.contains(o)) {
-                                    vm.eraseAt((o.x - r.left) / r.width, (o.y - r.top) / r.height)
-                                }
-                            },
-                            onPress = {
-                                if (removing) return@detectTapGestures
-                                vm.loadBefore()
-                                val released = kotlinx.coroutines.withTimeoutOrNull(320) { tryAwaitRelease() }
-                                if (released == null) {
-                                    holding = true
-                                    tryAwaitRelease()
-                                    holding = false
-                                }
-                            },
-                        )
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .onSizeChanged {
+                        area = it
+                        vm.setViewport(it.width, it.height)
                     },
             ) {
-                if (removing && fit != null) Checkerboard(fit)
-                val layer = Modifier.fillMaxSize().graphicsLayer {
-                    scaleX = zoom
-                    scaleY = zoom
-                    translationX = pan.x
-                    translationY = pan.y
+                val shown: Bitmap? = when {
+                    cropping -> cropView ?: preview
+                    removing -> cutout ?: preview
+                    holding -> before ?: preview
+                    else -> preview
                 }
-                val b = before
-                if (compare && !removing && b != null && preview != null && fit != null) {
-                    val cut = fit.left + fit.width * split
-                    Image(b.asImageBitmap(), "Before", contentScale = ContentScale.Fit, modifier = layer.drawWithContent { clipRect(right = cut) { this@drawWithContent.drawContent() } })
-                    Image(preview?.asImageBitmap() ?: b.asImageBitmap(), "After", contentScale = ContentScale.Fit, modifier = layer.drawWithContent { clipRect(left = cut) { this@drawWithContent.drawContent() } })
-                    SplitHandle(fit, split, onMove = { split = it })
-                } else if (shown != null) {
-                    Image(shown.asImageBitmap(), "Photo", contentScale = ContentScale.Fit, modifier = layer)
-                } else {
-                    CircularProgressIndicator(Modifier.align(Alignment.Center), color = Lc.accent)
+                val fit = shown?.let { fitRect(it.width, it.height, area) }
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .pointerInput(photo, removing, fixed) {
+                            if (!removing && !fixed) {
+                                detectTransformGestures { _, p, z, _ ->
+                                    zoom = (zoom * z).coerceIn(1f, 8f)
+                                    pan = if (zoom == 1f) Offset.Zero else pan + p
+                                }
+                            }
+                        }
+                        .pointerInput(photo, painting, fit) {
+                            val r = fit ?: return@pointerInput
+                            if (!painting) return@pointerInput
+                            detectDragGestures(
+                                onDragStart = { o -> stroke.clear(); if (r.contains(o)) stroke.add(o) },
+                                onDragEnd = {
+                                    val pts = stroke.map { ((it.x - r.left) / r.width) to ((it.y - r.top) / r.height) }
+                                    stroke.clear()
+                                    vm.brushStroke(thin(pts))
+                                },
+                                onDragCancel = { stroke.clear() },
+                            ) { c, _ ->
+                                c.consume()
+                                if (r.contains(c.position)) stroke.add(c.position)
+                            }
+                        }
+                        .pointerInput(photo, removing, painting, tapping, picking, fit, tool?.id) {
+                            detectTapGestures(
+                                onDoubleTap = {
+                                    if (!removing && !fixed) {
+                                        zoom = if (zoom > 1f) 1f else 2.5f
+                                        pan = Offset.Zero
+                                    }
+                                },
+                                onTap = { o ->
+                                    val r = fit ?: return@detectTapGestures
+                                    if (!r.contains(o)) return@detectTapGestures
+                                    val u = (o.x - r.left) / r.width
+                                    val v = (o.y - r.top) / r.height
+                                    when {
+                                        picking -> vm.pickWb(u, v)
+                                        removing && tool?.id == "eraser" -> vm.eraseAt(u, v)
+                                        tapping -> vm.objectTap(u, v, objectExclude)
+                                        painting -> vm.brushStroke(listOf(u to v))
+                                    }
+                                },
+                                onPress = {
+                                    if (removing || fixed) return@detectTapGestures
+                                    vm.loadBefore()
+                                    val released = kotlinx.coroutines.withTimeoutOrNull(320) { tryAwaitRelease() }
+                                    if (released == null) {
+                                        holding = true
+                                        tryAwaitRelease()
+                                        holding = false
+                                    }
+                                },
+                            )
+                        },
+                ) {
+                    if (removing && fit != null) Checkerboard(fit)
+                    val layer = Modifier.fillMaxSize().graphicsLayer {
+                        scaleX = zoom
+                        scaleY = zoom
+                        translationX = pan.x
+                        translationY = pan.y
+                    }
+                    val b = before
+                    if (compare && !removing && b != null && preview != null && fit != null) {
+                        val cut = fit.left + fit.width * split
+                        Image(b.asImageBitmap(), "Before", contentScale = ContentScale.Fit, modifier = layer.drawWithContent { clipRect(right = cut) { this@drawWithContent.drawContent() } })
+                        Image(preview?.asImageBitmap() ?: b.asImageBitmap(), "After", contentScale = ContentScale.Fit, modifier = layer.drawWithContent { clipRect(left = cut) { this@drawWithContent.drawContent() } })
+                        SplitHandle(fit, split, onMove = { split = it })
+                    } else if (shown != null) {
+                        Image(shown.asImageBitmap(), "Photo", contentScale = ContentScale.Fit, modifier = layer)
+                    } else {
+                        CircularProgressIndicator(Modifier.align(Alignment.Center), color = Lc.text, strokeWidth = 2.dp)
+                    }
+                    val cv = cropView
+                    if (cropping && fit != null && cv != null) {
+                        CropOverlay(fit, look.crop, cropRatio, cv.width.toFloat() / cv.height.coerceAtLeast(1)) { r -> vm.setCropRect(r[0], r[1], r[2], r[3]) }
+                    }
+                    if (painting && fit != null) {
+                        val radius = brush.size * maxOf(fit.width, fit.height)
+                        Canvas(Modifier.fillMaxSize()) {
+                            val color = if (brush.erase) Lc.reject.copy(alpha = 0.4f) else Color(0x66E02030)
+                            stroke.forEach { drawCircle(color, radius, it) }
+                        }
+                    }
+                    if (holding && !removing) Pill("Before", Modifier.align(Alignment.TopStart).padding(12.dp))
+                    if (fixed && !cropping) {
+                        val hint = when {
+                            picking -> "Tap a neutral grey or white in the photo"
+                            painting && brush.erase -> "Erasing: drag on the photo"
+                            painting -> "Painting: drag on the photo"
+                            objectExclude -> "Tap the parts to subtract"
+                            else -> "Tap an object to select it"
+                        }
+                        Row(
+                            Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp).clip(RoundedCornerShape(6.dp)).background(Lc.pill).padding(start = 12.dp, end = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(hint, fontFamily = Inter, fontSize = 12.sp, color = Lc.text)
+                            Text(
+                                "Done",
+                                fontFamily = Inter,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Lc.text,
+                                modifier = Modifier.clickable { if (picking) vm.armWbPicker(false) else vm.closeTool() }.padding(horizontal = 10.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
                 }
-                if (tab == MainTab.Masking && !compare && !holding && fit != null) MaskCanvas(vm, ViewMap(fit, zoom, pan, area))
-                if (tab == MainTab.Edit && !compare && !holding && fit != null) {
-                    PhotoTapLayer(vm, ViewMap(fit, zoom, pan, area))
-                    SuggestionLayer(vm, ViewMap(fit, zoom, pan, area), shown?.width?.toFloat() ?: 1f, shown?.height?.toFloat() ?: 1f)
-                }
-                if (holding && !removing) Pill("BEFORE", Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 16.dp, top = 56.dp))
+                LcSnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
             }
-            // icons over the photo
-            Row(
-                Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 4.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            if (stripOpen) Filmstrip(vm)
+            // the panel's handle: tap to fold the panel away or bring it back, drag to resize it
+            val density = LocalDensity.current
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(18.dp)
+                    .background(Lc.chrome)
+                    .pointerInput(Unit) { detectTapGestures(onTap = { panelOpen = !panelOpen }) }
+                    .pointerInput(Unit) {
+                        detectVerticalDragGestures { c, dy ->
+                            c.consume()
+                            val total = with(density) { fullHeight.toPx() }
+                            if (!panelOpen && dy < 0) panelOpen = true
+                            panelShare = (panelShare - dy / total).coerceIn(0.2f, 0.75f)
+                        }
+                    }
+                    .semantics { contentDescription = if (panelOpen) "Hide panel (drag to resize)" else "Show panel" },
+                contentAlignment = Alignment.Center,
             ) {
-                OverlayIcon(Icons.AutoMirrored.Outlined.ArrowBack, "Back to library", vm::close)
-                Spacer(Modifier.weight(1f))
-                if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
-                OverlayIcon(Icons.AutoMirrored.Outlined.Undo, "Undo", vm::undo)
-                OverlayIcon(Icons.AutoMirrored.Outlined.Redo, "Redo", vm::redo)
-                OverlayIcon(LcIcons.Compare, "Before and after", tint = if (compare) Lc.accent else Color.White) {
-                    compare = !compare
-                    if (compare) vm.loadBefore()
-                }
-                OverlayIcon(Icons.Outlined.Share, "Export and share", vm::share)
-                WorkflowMenu(vm)
+                Box(Modifier.width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Lc.buttonBorder))
             }
-            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
+            if (panelOpen) {
+                Column(Modifier.fillMaxWidth().height(panelHeight).background(Lc.chrome).verticalScroll(rememberScrollState())) {
+                    Panel(vm, tab, tool)
+                }
+            }
+            Rail(tab, stripOpen, onStrip = { stripOpen = !stripOpen }) { t ->
+                if (t == tab) panelOpen = !panelOpen else { panelOpen = true; vm.selectTab(t) }
+            }
         }
-        BottomChrome(vm, tab, tool)
+    }
+
+    when (sheet) {
+        "export" -> ExportSheet(vm) { sheet = null }
+        "info" -> InfoSheet(vm) { sheet = null }
+    }
+}
+
+/**
+ * The desktop's filmstrip: the photos of the library view the editor came from, the open one
+ * framed in white; tap another to edit it.
+ */
+@Composable
+private fun Filmstrip(vm: LightCraftViewModel) {
+    val strip by vm.strip.collectAsStateWithLifecycle()
+    val version by vm.thumbVersion.collectAsStateWithLifecycle()
+    val editing by vm.editing.collectAsStateWithLifecycle()
+    if (strip.size < 2) return
+    val current = vm.editingImageId
+    val state = rememberLazyListState()
+    LaunchedEffect(editing) {
+        val i = strip.indexOfFirst { it.id == current }
+        if (i >= 0) state.animateScrollToItem((i - 2).coerceAtLeast(0))
+    }
+    LazyRow(
+        Modifier.fillMaxWidth().height(64.dp).background(Lc.inset),
+        state = state,
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        items(strip, key = { it.id }) { g ->
+            val on = g.id == current
+            var bmp by remember(g.id) { mutableStateOf(vm.cachedThumbnail(g)) }
+            LaunchedEffect(g.id, version) { vm.thumbnail(g, 192)?.let { bmp = it } }
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .width((52f * g.aspect.coerceIn(0.6f, 1.8f)).dp)
+                    .background(if (on) Lc.cellSelected else Lc.skeleton)
+                    .then(if (on) Modifier.border(2.dp, Lc.pick) else Modifier)
+                    .clickable { vm.switchTo(g) },
+            ) {
+                bmp?.let { Image(it.asImageBitmap(), g.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().padding(if (on) 2.dp else 0.dp)) }
+            }
+        }
+    }
+}
+
+/** At most one point every ~1 % of the photo, so a long stroke stays a small command. */
+private fun thin(points: List<Pair<Float, Float>>): List<Pair<Float, Float>> {
+    val out = ArrayList<Pair<Float, Float>>()
+    for (p in points) {
+        val last = out.lastOrNull()
+        if (last == null || kotlin.math.hypot(p.first - last.first, p.second - last.second) > 0.01f) out += p
+    }
+    points.lastOrNull()?.let { if (out.lastOrNull() != it) out += it }
+    return out.take(512)
+}
+
+@Composable
+private fun TopBar(vm: LightCraftViewModel, compare: Boolean, busy: Boolean, onCompare: () -> Unit, onSheet: (String) -> Unit) {
+    val copied by vm.copied.collectAsStateWithLifecycle()
+    val info by vm.info.collectAsStateWithLifecycle()
+    var menu by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().background(Lc.chrome).statusBarsPadding()) {
+        Row(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            LcIconButton(DeskIcon.Back, "Back to the library", onClick = vm::close)
+            Text(
+                info?.optString("file_name")?.takeIf { it.isNotEmpty() } ?: "",
+                fontFamily = Inter,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 14.sp,
+                color = Lc.text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+            )
+            if (busy) CircularProgressIndicator(Modifier.padding(end = 6.dp).height(16.dp).width(16.dp), color = Lc.text, strokeWidth = 2.dp)
+            LcIconButton(DeskIcon.Undo, "Undo", size = 38.dp, onClick = vm::undo)
+            LcIconButton(DeskIcon.Redo, "Redo", size = 38.dp, onClick = vm::redo)
+            LcIconButton(DeskIcon.BeforeAfter, "Before / After", active = compare, size = 38.dp, onClick = onCompare)
+            LcIconButton(DeskIcon.Share, "Export", size = 38.dp) { onSheet("export") }
+            Box {
+                LcIconButton(DeskIcon.More, "More", size = 38.dp) { menu = true }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Lc.chrome) {
+                    MenuItem(DeskIcon.Info, "Info and Rating") { menu = false; onSheet("info") }
+                    MenuItem(DeskIcon.Versions, "Copy Edit Settings") { menu = false; vm.copyEdits() }
+                    if (copied) MenuItem(DeskIcon.Check, "Paste Edit Settings") { menu = false; vm.pasteEdits() }
+                    MenuItem(DeskIcon.Rotate, "Reset All Edits") { menu = false; vm.quickAction("reset") }
+                    MenuItem(DeskIcon.Trash, "Delete Photo", Lc.reject) { menu = false; vm.deleteCurrent() }
+                }
+            }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Lc.divider))
+    }
+}
+
+@Composable
+private fun MenuItem(icon: DeskIcon, label: String, tint: Color = Lc.text, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text(label, color = tint, fontFamily = Inter, fontSize = 14.sp) },
+        leadingIcon = { LcIcon(icon, if (tint == Lc.text) Lc.icon else tint, 18.dp) },
+        onClick = onClick,
+    )
+}
+
+private fun railIcon(t: MainTab) = when (t) {
+    MainTab.Edit -> DeskIcon.Sliders
+    MainTab.Crop -> DeskIcon.Crop
+    MainTab.Remove -> DeskIcon.Eraser
+    MainTab.Masking -> DeskIcon.Mask
+    MainTab.Presets -> DeskIcon.Presets
+}
+
+/** The desktop's tool rail, laid along the bottom: the open tool on the tool-active fill. */
+@Composable
+internal fun Rail(tab: MainTab, strip: Boolean = true, onStrip: () -> Unit = {}, onSelect: (MainTab) -> Unit) {
+    Column(Modifier.fillMaxWidth().background(Lc.chrome).navigationBarsPadding()) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Lc.divider))
+        Row(Modifier.fillMaxWidth().height(54.dp).padding(horizontal = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+            MainTab.entries.forEach { t -> LcIconButton(railIcon(t), t.label, active = t == tab, size = 44.dp, iconSize = 22.dp) { onSelect(t) } }
+            Box(Modifier.width(1.dp).height(24.dp).background(Lc.buttonBorder))
+            LcIconButton(DeskIcon.Filmstrip, if (strip) "Hide filmstrip" else "Show filmstrip", active = strip, size = 44.dp, iconSize = 22.dp, onClick = onStrip)
+        }
     }
 }
 
@@ -278,7 +446,7 @@ internal fun Checkerboard(r: Rect) {
     }
 }
 
-/** The before/after divider: a white line with a round handle, BEFORE and AFTER labels. */
+/** The before / after divider: a thin line with a round handle, Before and After labels. */
 @Composable
 internal fun SplitHandle(fit: Rect, split: Float, onMove: (Float) -> Unit) {
     val density = LocalDensity.current
@@ -292,17 +460,14 @@ internal fun SplitHandle(fit: Rect, split: Float, onMove: (Float) -> Unit) {
         },
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            drawLine(Color.White, Offset(x, fit.top), Offset(x, fit.bottom), 1.5.dp.toPx())
+            drawLine(Lc.pick, Offset(x, fit.top), Offset(x, fit.bottom), 1.dp.toPx())
             val c = Offset(x, fit.center.y)
-            drawCircle(Color.White, 13.dp.toPx(), c)
-            drawCircle(Color(0x33000000), 13.dp.toPx(), c, style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()))
+            drawCircle(Lc.chrome, 12.dp.toPx(), c)
+            drawCircle(Lc.pick, 12.dp.toPx(), c, style = Stroke(1.5.dp.toPx()))
         }
-        val top = with(density) { (fit.top).toDp() }
-        Pill("BEFORE", Modifier.padding(start = with(density) { fit.left.toDp() } + 12.dp, top = maxOf(top, 0.dp) + 60.dp))
-        Pill(
-            "AFTER",
-            Modifier.align(Alignment.TopEnd).padding(end = with(density) { (fit.left).toDp() } + 12.dp, top = maxOf(top, 0.dp) + 60.dp),
-        )
+        val top = with(density) { fit.top.toDp() }
+        Pill("Before", Modifier.padding(start = with(density) { fit.left.toDp() } + 10.dp, top = maxOf(top, 0.dp) + 10.dp))
+        Pill("After", Modifier.align(Alignment.TopEnd).padding(end = with(density) { fit.left.toDp() } + 10.dp, top = maxOf(top, 0.dp) + 10.dp))
     }
 }
 
@@ -310,426 +475,10 @@ internal fun SplitHandle(fit: Rect, split: Float, onMove: (Float) -> Unit) {
 internal fun Pill(text: String, modifier: Modifier = Modifier) {
     Text(
         text,
-        color = Color.White,
+        color = Lc.text,
+        fontFamily = Inter,
         fontSize = 12.sp,
-        fontWeight = FontWeight.Bold,
-        modifier = modifier.background(Lc.pill, RoundedCornerShape(8.dp)).padding(horizontal = 9.dp, vertical = 5.dp),
+        fontWeight = FontWeight.Medium,
+        modifier = modifier.background(Lc.pill, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 4.dp),
     )
 }
-
-@Composable
-private fun OverlayIcon(icon: ImageVector, label: String, onClick: () -> Unit) = OverlayIcon(icon, label, Color.White, onClick)
-
-@Composable
-internal fun OverlayIcon(icon: ImageVector, label: String, tint: Color, onClick: () -> Unit) {
-    IconButton(onClick = onClick) {
-        Box(Modifier.size(36.dp).background(Color(0x40000000), CircleShape), contentAlignment = Alignment.Center) {
-            Icon(icon, label, tint = tint, modifier = Modifier.size(22.dp))
-        }
-    }
-}
-
-// ---- bottom ------------------------------------------------------------------------------------
-
-@Composable
-private fun BottomChrome(vm: LightCraftViewModel, tab: MainTab, tool: Tool?) {
-    Column(Modifier.fillMaxWidth().background(Lc.chrome)) {
-        Panel(vm, tab, tool)
-        val row = when (tab) {
-            MainTab.Quick -> Tools.quick
-            MainTab.Edit -> Tools.edit
-            MainTab.Masking -> Tools.masking
-            MainTab.Remove -> Tools.remove
-            else -> emptyList()
-        }
-        if (row.isNotEmpty()) ToolRow(row, tool, divideAfterFirst = false, onSelect = vm::selectTool)
-        Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF2E2E2E)))
-        MainBar(tab, vm::selectTab)
-    }
-}
-
-@Composable
-private fun Panel(vm: LightCraftViewModel, tab: MainTab, tool: Tool?) {
-    val controls by vm.controls.collectAsStateWithLifecycle()
-    when (tab) {
-        MainTab.Presets -> PresetPanel(vm)
-        MainTab.Crop -> CropPanel(vm, controls.filter { it.id == "crop.angle" })
-        MainTab.Masking -> MaskPanel(vm)
-        MainTab.Remove -> if (tool?.id == "eraser") ErasePanel(vm)
-        MainTab.Edit -> when (tool?.kind) {
-            ToolKind.Curve -> {
-                val curves by vm.curves.collectAsStateWithLifecycle()
-                CurveEditor(curves, vm::setCurve, vm::finishInteraction, vm::resetCurve)
-            }
-            ToolKind.Sliders -> SliderPanel(vm, tool, controls)
-            ToolKind.LensBlur -> LensBlurPanel(vm, controls)
-            ToolKind.Profile -> ProfilePanel(vm, controls)
-            ToolKind.Heal -> HealPanel(vm)
-            else -> {}
-        }
-        MainTab.Quick -> QuickPanel(vm, controls)
-    }
-}
-
-/** The scrolling list under a tool: full width, as tall as [max] at most. */
-@Composable
-private fun ScrollList(max: Dp = 210.dp, content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .heightIn(max = max)
-            .verticalScroll(rememberScrollState())
-            .padding(start = 22.dp, end = 22.dp, top = 6.dp, bottom = 4.dp),
-        content = content,
-    )
-}
-
-/** Engine sliders as rows, each its own key so a drag survives recomposition. */
-@Composable
-private fun Sliders(vm: LightCraftViewModel, controls: List<Control>, enabled: Boolean = true) {
-    controls.forEach { c ->
-        key(c.id) {
-            LrSlider(
-                c.label, c.value, c.min, c.max, c.default, c.decimals, c.unit,
-                onChange = { if (enabled) vm.setControl(c.id, it) },
-                onDone = vm::finishInteraction,
-                onReset = { if (enabled) vm.resetControl(c.id) },
-                modifier = if (enabled) Modifier else Modifier.graphicsLayer { alpha = 0.4f },
-                track = c.track,
-            )
-        }
-    }
-}
-
-/** Quick edit: the sliders most edits use, above the one-tap actions. */
-@Composable
-private fun QuickPanel(vm: LightCraftViewModel, all: List<Control>) {
-    val byId = all.associateBy { it.id }
-    val controls = Tools.quickControls.mapNotNull { byId[it] }
-    if (controls.isEmpty()) return
-    ScrollList { Sliders(vm, controls) }
-}
-
-/** Lens Blur: Apply, what stays in focus, then Amount, Boost and Transition. */
-@Composable
-private fun LensBlurPanel(vm: LightCraftViewModel, all: List<Control>) {
-    val state by vm.optics.collectAsStateWithLifecycle()
-    ScrollList {
-        Toggle("Apply", state.blur, Modifier.fillMaxWidth()) { vm.setLensBlur(it) }
-        Toggle("Use depth (AI)", state.blurDepth, Modifier.fillMaxWidth().graphicsLayer { alpha = if (state.blur) 1f else 0.4f }) { if (state.blur) vm.setBlurDepth(it) }
-        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("In focus", fontSize = 14.sp, color = Lc.label, modifier = Modifier.weight(1f))
-            Tools.blurShapes.forEach { (id, label) ->
-                val on = state.blurShape == id
-                Text(
-                    label,
-                    fontSize = 13.sp,
-                    color = if (on) Color.White else Lc.label,
-                    modifier = Modifier
-                        .padding(start = 6.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(if (on) Lc.accent else Lc.raised)
-                        .graphicsLayer { alpha = if (state.blur) 1f else 0.4f }
-                        .clickable(enabled = state.blur) { vm.setBlurShape(id) }
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                )
-            }
-        }
-        Sliders(vm, all.filter { it.id.startsWith("lensBlur.") }, enabled = state.blur)
-    }
-}
-
-@Composable
-private fun SliderPanel(vm: LightCraftViewModel, tool: Tool, all: List<Control>) {
-    // Point Color shows before it has a sample (its sliders come with the first one)
-    val groups = tool.groups.filter { g -> g.style == GroupStyle.PointColor || all.any { g.matches(it.id) } }
-    var selected by remember(tool.id) { mutableIntStateOf(0) }
-    var band by rememberSaveable { mutableIntStateOf(0) }
-    var range by rememberSaveable { mutableIntStateOf(1) }
-    val group = groups.getOrNull(selected) ?: groups.firstOrNull() ?: return
-    val controls = all.filter { group.matches(it.id) }
-    Column(Modifier.fillMaxWidth()) {
-        if (groups.size > 1) Pills(groups.map { it.title }, groups.indexOf(group), { selected = it }, onReset = { vm.resetGroup(group) })
-        ScrollList(max = if (group.style == GroupStyle.Grading) 300.dp else 210.dp) {
-            when {
-                tool.id == "optics" -> {
-                    OpticsSwitches(vm)
-                    LensDbRow(vm)
-                }
-                tool.id == "light" -> HdrRow(vm)
-                tool.id == "geometry" -> UprightRow(vm)
-                group.title == "Color" -> WhiteBalanceRow(vm)
-                group.title == "B&W" -> BwRow(vm)
-            }
-            when (group.style) {
-                GroupStyle.Mixer -> MixerPanel(controls, band, { band = it }, vm::setControl, vm::finishInteraction, vm::resetControl)
-                GroupStyle.Grading -> GradingPanel(
-                    controls, range, { range = it },
-                    onWheel = { hueId, hue, satId, sat -> vm.setControls(mapOf(hueId to hue, satId to sat)) },
-                    onChange = vm::setControl,
-                    onDone = vm::finishInteraction,
-                    onReset = vm::resetControl,
-                )
-                GroupStyle.PointColor -> {
-                    PointColorRow(vm)
-                    Sliders(vm, controls)
-                }
-                GroupStyle.Sliders -> Sliders(vm, controls)
-            }
-        }
-    }
-}
-
-/** Optics' two checkboxes, above its sliders. */
-@Composable
-private fun OpticsSwitches(vm: LightCraftViewModel) {
-    val state by vm.optics.collectAsStateWithLifecycle()
-    Toggle("Enable Profile Corrections", state.lensProfile, Modifier.fillMaxWidth()) { vm.setLensProfile(it) }
-    Toggle("Remove Chromatic Aberration", state.removeCa, Modifier.fillMaxWidth()) { vm.setRemoveCa(it) }
-}
-
-@Composable
-internal fun Pills(titles: List<String>, selected: Int, onSelect: (Int) -> Unit, onReset: (() -> Unit)?, padded: Boolean = true) {
-    Row(Modifier.fillMaxWidth().height(44.dp).padding(start = if (padded) 14.dp else 0.dp, end = if (padded) 10.dp else 0.dp), verticalAlignment = Alignment.CenterVertically) {
-        LazyRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(titles.size) { i ->
-                val on = i == selected
-                Text(
-                    titles[i],
-                    fontSize = 14.sp,
-                    fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (on) Lc.text else Lc.muted,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(if (on) Lc.raised else Color.Transparent)
-                        .clickable { onSelect(i) }
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                )
-            }
-        }
-        if (onReset != null) {
-            Text("Reset", fontSize = 14.sp, color = Lc.label, modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onReset).padding(horizontal = 10.dp, vertical = 6.dp))
-        }
-    }
-}
-
-@Composable
-private fun PresetPanel(vm: LightCraftViewModel) {
-    val presets by vm.presets.collectAsStateWithLifecycle()
-    val thumbs by vm.presetThumbs.collectAsStateWithLifecycle()
-    val groups = presets.map { it.group.ifEmpty { "Presets" } }.distinct()
-    var selected by remember { mutableIntStateOf(0) }
-    val group = groups.getOrNull(selected) ?: groups.firstOrNull()
-    val shown = presets.filter { it.group.ifEmpty { "Presets" } == group }
-    var applied by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(shown.map { it.id }) { vm.loadPresetThumbs(shown.map { it.id }) }
-    Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-        Pills(groups.map { "Style: $it" }.ifEmpty { listOf("Presets") }, groups.indexOf(group).coerceAtLeast(0), { selected = it }, onReset = null)
-        LazyRow(contentPadding = PaddingValues(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(shown, key = { it.id }) { p ->
-                Column(Modifier.width(84.dp).clickable { applied = p.id; vm.applyPreset(p.id) }, horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(
-                        Modifier
-                            .size(84.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Lc.raised)
-                            .border(if (applied == p.id) 2.dp else 0.dp, if (applied == p.id) Color.White else Color.Transparent, RoundedCornerShape(6.dp)),
-                    ) {
-                        thumbs[p.id]?.let { Image(it.asImageBitmap(), p.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
-                    }
-                    Text(p.name, fontSize = 12.sp, color = Lc.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CropPanel(vm: LightCraftViewModel, straighten: List<Control>) {
-    Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp)) {
-        LazyRow(contentPadding = PaddingValues(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(Tools.aspects) { a ->
-                Text(
-                    a.label,
-                    fontSize = 14.sp,
-                    color = Lc.text,
-                    modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(Lc.raised).clickable { vm.cropAspect(a.ratio) }.padding(horizontal = 14.dp, vertical = 7.dp),
-                )
-            }
-            item {
-                Text("Auto straighten", fontSize = 14.sp, color = Lc.text, modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(Lc.raised).clickable { vm.autoStraighten() }.padding(horizontal = 14.dp, vertical = 7.dp))
-            }
-            item {
-                Text("Reset", fontSize = 14.sp, color = Lc.label, modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable { vm.cropCommand("crop.reset") }.padding(horizontal = 12.dp, vertical = 7.dp))
-            }
-        }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-            IconButton(onClick = { vm.cropCommand("photo.rotateLeft") }) { Icon(Icons.AutoMirrored.Outlined.RotateLeft, "Rotate left", tint = Lc.text) }
-            IconButton(onClick = { vm.cropCommand("photo.rotateRight") }) { Icon(Icons.AutoMirrored.Outlined.RotateRight, "Rotate right", tint = Lc.text) }
-            IconButton(onClick = { vm.cropCommand("photo.flipHorizontal") }) { Icon(Icons.Outlined.Flip, "Flip horizontal", tint = Lc.text) }
-            IconButton(onClick = { vm.cropCommand("photo.flipVertical") }) { Icon(Icons.Outlined.Flip, "Flip vertical", tint = Lc.text, modifier = Modifier.graphicsLayer { rotationZ = 90f }) }
-        }
-        straighten.forEach { c ->
-            LrSlider(c.label, c.value, c.min, c.max, c.default, c.decimals, "°", { vm.setControl(c.id, it) }, vm::finishInteraction, { vm.resetControl(c.id) }, Modifier.padding(horizontal = 22.dp))
-        }
-    }
-}
-
-@Composable
-private fun ErasePanel(vm: LightCraftViewModel) {
-    val o by vm.erase.collectAsStateWithLifecycle()
-    Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 6.dp)) {
-        Text("Tap the photo to erase similar colours", fontSize = 13.sp, color = Lc.label, modifier = Modifier.padding(vertical = 4.dp))
-        LrSlider("Tolerance", o.tolerance, 0f, 100f, 32f, 0, "", { vm.setErase(o.copy(tolerance = it)) }, {}, { vm.setErase(o.copy(tolerance = 32f)) })
-        LrSlider("Feather", o.feather, 0f, 20f, 0f, 0, "px", { vm.setErase(o.copy(feather = it)) }, {}, { vm.setErase(o.copy(feather = 0f)) })
-        LrSlider("Opacity", o.opacity, 0f, 100f, 100f, 0, "%", { vm.setErase(o.copy(opacity = it)) }, {}, { vm.setErase(o.copy(opacity = 100f)) })
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Toggle("Contiguous", o.contiguous, Modifier.weight(1f)) { vm.setErase(o.copy(contiguous = it)) }
-            Toggle("Anti-alias", o.antiAlias, Modifier.weight(1f)) { vm.setErase(o.copy(antiAlias = it)) }
-        }
-        Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Sample", fontSize = 15.sp, color = Lc.text, modifier = Modifier.weight(1f))
-            listOf("Point", "3×3", "5×5").forEachIndexed { i, label ->
-                val on = o.sample == i
-                Text(
-                    label,
-                    fontSize = 13.sp,
-                    color = if (on) Color.White else Lc.label,
-                    modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(14.dp)).background(if (on) Lc.accent else Lc.raised).clickable { vm.setErase(o.copy(sample = i)) }.padding(horizontal = 10.dp, vertical = 5.dp),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-internal fun Toggle(label: String, on: Boolean, modifier: Modifier, onChange: (Boolean) -> Unit) {
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Text(label, fontSize = 15.sp, color = Lc.text, modifier = Modifier.weight(1f))
-        Switch(
-            checked = on,
-            onCheckedChange = onChange,
-            colors = SwitchDefaults.colors(checkedTrackColor = Lc.accent, checkedThumbColor = Color.White),
-            modifier = Modifier.graphicsLayer { scaleX = 0.8f; scaleY = 0.8f },
-        )
-        Spacer(Modifier.width(10.dp))
-    }
-}
-
-private fun iconOf(t: Tool, tab: MainTab): ImageVector = when (tab) {
-    MainTab.Quick -> when (t.id) {
-        "auto" -> Icons.Outlined.AutoAwesome
-        "pop" -> Icons.Outlined.Person
-        "sky" -> Icons.Outlined.Cloud
-        "bw" -> Icons.Outlined.Contrast
-        "cutout" -> Icons.Outlined.ContentCut
-        else -> Icons.Outlined.RestartAlt
-    }
-    MainTab.Masking -> when (t.id) {
-        "object" -> Icons.Outlined.TouchApp
-        "subject" -> Icons.Outlined.Person
-        "background" -> Icons.Outlined.Wallpaper
-        "sky" -> Icons.Outlined.Cloud
-        "linear" -> Icons.Outlined.Gradient
-        "brush" -> Icons.Outlined.Brush
-        "color" -> Icons.Outlined.Palette
-        "luminance" -> Icons.Outlined.Brightness6
-        else -> Icons.Outlined.RadioButtonUnchecked
-    }
-    MainTab.Remove -> when (t.id) {
-        "eraser" -> LcIcons.Remove
-        "ai" -> Icons.Outlined.AutoAwesome
-        "keep" -> Icons.Outlined.Wallpaper
-        "people" -> Icons.Outlined.Person
-        "undo" -> Icons.AutoMirrored.Outlined.Undo
-        "reset" -> Icons.Outlined.Restore
-        else -> Icons.Outlined.SaveAlt
-    }
-    else -> when (t.id) {
-        "auto" -> Icons.Outlined.AutoAwesome
-        "light" -> Icons.Outlined.WbSunny
-        "color" -> Icons.Outlined.Thermostat
-        "curve" -> LcIcons.Curve
-        "effects" -> Icons.Outlined.Vignette
-        "detail" -> Icons.Outlined.Details
-        "optics" -> Icons.Outlined.CameraAlt
-        "blur" -> Icons.Outlined.BlurOn
-        "profile" -> Icons.Outlined.Style
-        "heal" -> Icons.Outlined.Healing
-        else -> Icons.Outlined.Straighten
-    }
-}
-
-/** The labelled tools above the main bar; the open one sits on a lighter rounded square. */
-@Composable
-internal fun ToolRow(tools: List<Tool>, selected: Tool?, divideAfterFirst: Boolean, onSelect: (Tool) -> Unit) {
-    val tab = when (tools) {
-        Tools.quick -> MainTab.Quick
-        Tools.masking -> MainTab.Masking
-        Tools.remove -> MainTab.Remove
-        else -> MainTab.Edit
-    }
-    LazyRow(
-        Modifier.fillMaxWidth().background(Lc.bar).padding(vertical = 8.dp),
-        contentPadding = PaddingValues(horizontal = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        tools.forEachIndexed { i, t ->
-            item(key = t.id) {
-                val on = selected?.id == t.id
-                Column(
-                    Modifier
-                        .width(68.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (on) Lc.raised else Color.Transparent)
-                        .clickable { onSelect(t) }
-                        .padding(vertical = 8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Icon(iconOf(t, tab), contentDescription = null, tint = Lc.text, modifier = Modifier.size(22.dp))
-                    Spacer(Modifier.height(6.dp))
-                    Text(t.label, color = Lc.text, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-            if (divideAfterFirst && i == 0) {
-                item(key = "divider") { Box(Modifier.width(1.dp).height(34.dp).background(Color(0xFF4A4A4A))) }
-            }
-        }
-    }
-}
-
-/** The six main tabs; the current one in a blue rounded square, a dot under each. */
-@Composable
-internal fun MainBar(tab: MainTab, onSelect: (MainTab) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().background(Lc.bar).navigationBarsPadding().padding(top = 8.dp, bottom = 6.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-    ) {
-        MainTab.entries.forEach { t ->
-            val on = t == tab
-            Column(Modifier.clip(RoundedCornerShape(10.dp)).clickable { onSelect(t) }.padding(horizontal = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(
-                    Modifier.size(46.dp, 42.dp).clip(RoundedCornerShape(8.dp)).background(if (on) Lc.accent else Color.Transparent),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        when (t) {
-                            MainTab.Quick -> Icons.Outlined.AutoFixHigh
-                            MainTab.Presets -> LcIcons.Presets
-                            MainTab.Crop -> Icons.Outlined.Crop
-                            MainTab.Edit -> Icons.Outlined.Tune
-                            MainTab.Masking -> LcIcons.Masking
-                            MainTab.Remove -> LcIcons.Remove
-                        },
-                        contentDescription = t.label,
-                        tint = Color.White,
-                        modifier = Modifier.size(24.dp),
-                    )
-                }
-                Box(Modifier.padding(top = 5.dp).size(3.dp).clip(CircleShape).background(Lc.muted))
-            }
-        }
-    }
-}
-

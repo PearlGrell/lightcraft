@@ -147,13 +147,13 @@ fun CurveEditor(
             val w = size.width
             val h = size.height
             drawRect(Color(0xFF151515))
-            val grid = Color(0xFF444444)
+            val grid = Color(0xFF3C3C3C)
             for (k in 1..3) {
                 drawLine(grid, Offset(w * k / 4f, 0f), Offset(w * k / 4f, h), 1f)
                 drawLine(grid, Offset(0f, h * k / 4f), Offset(w, h * k / 4f), 1f)
             }
             drawRect(grid, style = Stroke(1f))
-            drawLine(Color(0xFF6A6A6A), Offset(0f, h), Offset(w, 0f), 1f)
+            drawLine(Color(0xFF555555), Offset(0f, h), Offset(w, 0f), 1f)
             val sorted = points.sortedBy { it.x }
             val path = Path()
             val steps = 96
@@ -163,12 +163,11 @@ fun CurveEditor(
                 val o = Offset(x * w, (1f - y) * h)
                 if (s == 0) path.moveTo(o.x, o.y) else path.lineTo(o.x, o.y)
             }
-            drawPath(path, channel.color, style = Stroke(1.8.dp.toPx()))
-            // small hollow points on the curve, as in the reference
+            drawPath(path, channel.color, style = Stroke(2.dp.toPx()))
             sorted.forEach { p ->
                 val o = Offset(p.x * w, (1f - p.y) * h)
-                drawCircle(Color(0xFF151515), 4.dp.toPx(), o)
-                drawCircle(channel.color, 4.dp.toPx(), o, style = Stroke(1.5.dp.toPx()))
+                drawCircle(Color(0xFF151515), 7.dp.toPx(), o)
+                drawCircle(channel.color, 7.dp.toPx(), o, style = Stroke(2.dp.toPx()))
             }
         }
     }

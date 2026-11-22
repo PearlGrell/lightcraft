@@ -259,6 +259,26 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeThumb
     }
 }
 
+/// `photo` without its crop (the crop tool's view), as `[width, height, argb…]`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeRenderUncropped<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    max_w: jint,
+    max_h: jint,
+    draft: jboolean,
+) -> jintArray {
+    match guarded(|| session(handle)?.render_uncropped(photo_id(photo)?, edge(max_w)?, edge(max_h)?, draft != 0)) {
+        Ok(f) => int_array(&mut env, &frame_ints(&f)),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 /// Export `photo` into the folder `dir` with the export dialog's JSON `options`; returns the path
 /// written, or throws `IllegalStateException` with the reason.
 #[unsafe(no_mangle)]
@@ -485,7 +505,7 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeMaskA
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeViewToImage<'l>(
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeViewToCorrected<'l>(
     mut env: JNIEnv<'l>,
     _class: JClass<'l>,
     handle: jlong,
@@ -494,7 +514,7 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeViewT
 ) -> jfloatArray {
     let r = guarded(|| {
         let pts = pairs(&floats(&mut env, &points)?);
-        session(handle)?.view_to_image(photo_id(photo)?, &pts)
+        session(handle)?.view_to_corrected(photo_id(photo)?, &pts)
     });
     match r {
         Ok(v) => float_array(&mut env, &v.iter().flat_map(|p| [p[0] as f32, p[1] as f32]).collect::<Vec<_>>()),
@@ -608,9 +628,118 @@ pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeCutou
     });
 }
 
+/// The histogram of `photo` with its edits: `[r×256, g×256, b×256, luma×256, shadows‰, highlights‰]`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeHistogram<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    long_edge: jint,
+) -> jintArray {
+    match guarded(|| session(handle)?.histogram(photo_id(photo)?, edge(long_edge)?)) {
+        Ok(h) => int_array(&mut env, &h.to_ints()),
+        Err(e) => {
+            throw(&mut env, &e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// `Mobile::gallery_marks` as a JSON string (`[]` when the session is gone).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeGalleryMarks<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+) -> jstring {
+    let marks = guarded(|| Ok(session(handle)?.gallery_marks())).unwrap_or_else(|_| "[]".into());
+    java_string(&mut env, &marks)
+}
+
+/// The gallery files at `paths` (one per line) were deleted: drop their photos. Returns how many
+/// went, or throws with the reason.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeForgetPaths<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    paths: JString<'l>,
+) -> jint {
+    let r = rust_string(&mut env, &paths).and_then(|paths| {
+        let list: Vec<String> = split_lines(&paths);
+        guarded(|| session(handle)?.forget_paths(&list))
+    });
+    match r {
+        Ok(n) => i32::try_from(n).unwrap_or(i32::MAX),
+        Err(e) => {
+            throw(&mut env, &e);
+            0
+        }
+    }
+}
+
+fn split_lines(s: &str) -> Vec<String> {
+    s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+}
+
+/// A point of the shown (cropped, rotated) photo → the uncropped photo's normalized point, as
+/// `[x, y]`; an empty array when it maps nowhere.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeViewToImage<'l>(
+    env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    photo: jlong,
+    u: jfloat,
+    v: jfloat,
+) -> jfloatArray {
+    let p = guarded(|| Ok(session(handle)?.view_to_image(photo_id(photo)?, u, v))).ok().flatten();
+    let data: Vec<f32> = p.map(|(x, y)| vec![x, y]).unwrap_or_default();
+    let Ok(len) = i32::try_from(data.len()) else { return std::ptr::null_mut() };
+    match env.new_float_array(len) {
+        Ok(arr) => match env.set_float_array_region(&arr, 0, &data) {
+            Ok(()) => arr.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Keep AI models (SAM 3) under `dir`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeSetModelsDir<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    dir: JString<'l>,
+) {
+    let r = rust_string(&mut env, &dir).and_then(|dir| {
+        guarded(|| {
+            session(handle)?.set_models_dir(&dir);
+            Ok(())
+        })
+    });
+    if let Err(e) = r {
+        throw(&mut env, &e);
+    }
+}
+
+/// Whether this build includes AI masks (SAM 3).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_ai_storyteller_lightcraft_android_Engine_nativeAiMasksAvailable(_env: JNIEnv, _class: JClass) -> jboolean {
+    jboolean::from(guarded(|| Ok(Mobile::ai_masks_available())).unwrap_or(false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forgotten_paths_are_split_by_line() {
+        assert_eq!(split_lines("/a.jpg\n\n  /b c.jpg \r\n"), vec!["/a.jpg".to_string(), "/b c.jpg".to_string()]);
+        assert!(split_lines("").is_empty());
+    }
 
     #[test]
     fn handles_are_checked() {
