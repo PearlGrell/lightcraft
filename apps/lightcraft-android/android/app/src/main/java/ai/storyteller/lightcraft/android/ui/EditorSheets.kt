@@ -28,6 +28,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,7 +47,7 @@ import java.util.Locale
 import org.json.JSONObject
 
 private val FORMATS = listOf("jpeg" to "JPEG", "png" to "PNG", "webp" to "WebP", "avif" to "AVIF")
-private val SIZES = listOf(0 to "Full Size", 4096 to "4096 px", 2048 to "2048 px", 1080 to "1080 px")
+private val SIZES = listOf(0 to "Full", 4096 to "4096", 2048 to "2048", 1080 to "1080")
 
 @Composable
 private fun SheetLabel(text: String) {
@@ -53,31 +62,114 @@ fun ExportSheet(vm: LightCraftViewModel, onDismiss: () -> Unit) {
     var quality by rememberSaveable { mutableFloatStateOf(90f) }
     var edge by rememberSaveable { mutableIntStateOf(0) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Lc.chrome) {
-        Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 12.dp)) {
-            Text("Export", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Lc.text, modifier = Modifier.padding(horizontal = 18.dp))
-            Text("The original stays as it is; this writes a new file with your edits.", fontFamily = Inter, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp))
-            SheetLabel("File Format")
-            Row(Modifier.padding(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FORMATS.forEach { (id, label) -> LcButton(label, on = format == id) { format = id } }
-            }
-            SheetLabel("Image Size")
-            Row(Modifier.padding(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                SIZES.forEach { (px, label) -> LcButton(label, on = edge == px) { edge = px } }
-            }
-            if (format != "png") {
-                Spacer(Modifier.height(6.dp))
-                LcSlider(
-                    SliderSpec("quality", "Quality", quality, 10f, 100f, 90f),
-                    SliderActions(change = { _, v -> quality = v }, done = {}, reset = { quality = 90f }),
-                )
-            }
-            Spacer(Modifier.height(14.dp))
-            val choice = ExportChoice(format, quality.toInt(), edge)
-            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                LcButton("Share", Modifier.weight(1f)) { onDismiss(); vm.export(choice, toGallery = false) }
-                LcButton("Save to Gallery", Modifier.weight(1f), on = true) { onDismiss(); vm.export(choice, toGallery = true) }
+        ExportBody(
+            format, { format = it }, quality, { quality = it }, edge, { edge = it },
+            onShare = { onDismiss(); vm.export(ExportChoice(format, quality.toInt(), edge), toGallery = false) },
+            onSave = { onDismiss(); vm.export(ExportChoice(format, quality.toInt(), edge), toGallery = true) },
+        )
+    }
+}
+
+/** [ExportSheet]'s contents, without its state. */
+@Composable
+internal fun ExportBody(
+    format: String,
+    onFormat: (String) -> Unit,
+    quality: Float,
+    onQuality: (Float) -> Unit,
+    edge: Int,
+    onEdge: (Int) -> Unit,
+    onShare: () -> Unit,
+    onSave: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 16.dp)) {
+        Text("Export", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, color = Lc.text, modifier = Modifier.padding(horizontal = 18.dp))
+        Text("Your original stays as it is: this makes a new file with your edits.", fontFamily = Inter, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 2.dp, bottom = 6.dp))
+
+        SheetLabel("Format")
+        Segmented(FORMATS, format, onFormat)
+        Text(FORMAT_NOTES[format] ?: "", fontFamily = Inter, fontSize = 11.sp, color = Lc.dim, modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 6.dp))
+
+        SheetLabel("Size")
+        Segmented(SIZES, edge, onEdge)
+        Text("Long edge, in pixels. Full keeps the photo's own size.", fontFamily = Inter, fontSize = 11.sp, color = Lc.dim, modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 6.dp))
+
+        if (format != "png") {
+            SheetLabel("Quality")
+            LcSlider(
+                SliderSpec("quality", "Smaller file  ·  Better quality", quality, 10f, 100f, 90f),
+                SliderActions(change = { _, v -> onQuality(v) }, done = {}, reset = { onQuality(90f) }),
+            )
+        }
+
+        val summary = listOfNotNull(
+            FORMATS.firstOrNull { it.first == format }?.second,
+            SIZES.firstOrNull { it.first == edge }?.second?.let { if (edge == 0) "full size" else "long edge $it" },
+            if (format != "png") "quality ${quality.toInt()}" else "lossless",
+        ).joinToString("  ·  ")
+        Text(summary, fontFamily = Inter, fontSize = 12.sp, color = Lc.label, modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 12.dp))
+
+        SheetButton("Save to Gallery", primary = true, onClick = onSave)
+        Spacer(Modifier.height(8.dp))
+        SheetButton("Share…", primary = false, onClick = onShare)
+    }
+}
+
+/** Format notes under the format choice. */
+private val FORMAT_NOTES = mapOf(
+    "jpeg" to "Works everywhere.",
+    "png" to "Lossless, larger files.",
+    "webp" to "Smaller than JPEG; most apps and browsers open it.",
+    "avif" to "Smallest files; newer apps only.",
+)
+
+/** A full-width choice of equal parts, the chosen one filled. */
+@Composable
+private fun <T> Segmented(options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp)
+            .height(38.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Lc.field)
+            .border(1.dp, Lc.fieldBorder, RoundedCornerShape(8.dp))
+            .padding(3.dp),
+    ) {
+        options.forEach { (value, label) ->
+            val on = value == selected
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (on) Lc.toolActive else Color.Transparent)
+                    .semantics { this.selected = on; role = Role.RadioButton }
+                    .clickable { onSelect(value) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(label, fontFamily = Inter, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, fontSize = 13.sp, color = if (on) Lc.text else Lc.label, maxLines = 1)
             }
         }
+    }
+}
+
+/** A full-width sheet button, label centred: the main action filled, the other outlined. */
+@Composable
+private fun SheetButton(label: String, primary: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp)
+            .height(46.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (primary) Lc.accent else Color.Transparent)
+            .border(1.dp, if (primary) Lc.accent else Lc.fieldBorder, RoundedCornerShape(8.dp))
+            .semantics { role = Role.Button }
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = if (primary) Color.White else Lc.text)
     }
 }
 

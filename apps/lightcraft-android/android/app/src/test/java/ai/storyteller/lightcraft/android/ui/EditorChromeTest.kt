@@ -360,6 +360,17 @@ class EditorChromeTest {
     }
 
     @Test
+    fun exportSheet() = paparazzi.snapshot {
+        LightCraftTheme {
+            Box(Modifier.fillMaxSize().background(Lc.canvas), contentAlignment = Alignment.BottomCenter) {
+                Box(Modifier.fillMaxWidth().background(Lc.chrome).padding(top = 16.dp)) {
+                    ExportBody("jpeg", {}, 90f, {}, 0, {}, {}, {})
+                }
+            }
+        }
+    }
+
+    @Test
     fun library() = paparazzi.snapshot {
         LightCraftTheme {
             val images = List(14) { i ->
