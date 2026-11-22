@@ -85,6 +85,11 @@ jobs:
       - name: Build the APK
         working-directory: apps/lightcraft-android/android
         run: ./gradlew assembleRelease --console=plain
+      - name: Signing certificate
+        # the fingerprint to compare with the installed app's (an update installs only on a match)
+        run: |
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/35.0.0)/apksigner"
+          "$apksigner" verify --print-certs apps/lightcraft-android/android/app/build/outputs/apk/release/app-release.apk | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: lightcraft-android-apk
