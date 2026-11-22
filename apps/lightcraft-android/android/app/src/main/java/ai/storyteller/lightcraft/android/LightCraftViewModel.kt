@@ -760,7 +760,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * The presets the app ships as the user's own (`assets/presets/*.xmp`), imported into the
+     * The presets the app ships as the user's own (the XMP files in `assets/presets`), imported into the
      * library once, on the first start that has them: they are ordinary saved presets from then
      * on (deletable; a deleted one doesn't come back). Command thread only.
      */
