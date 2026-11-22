@@ -42,6 +42,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import ai.storyteller.lightcraft.android.QuickSelectStatus
 import kotlin.math.roundToInt
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
@@ -574,7 +575,10 @@ private fun BrushSettings(vm: LightCraftViewModel) {
 /** Object selection: tap the thing to select; Subtract taps parts away. Gated on the model. */
 @Composable
 private fun ObjectHint(vm: LightCraftViewModel, ai: AiModelStatus) {
-    if (!ai.installed) {
+    val quick by vm.quickSelect.collectAsStateWithLifecycle()
+    if (!ai.installed && !quick.ready) {
+        QuickSelectCard(vm, quick)
+        SectionDivider()
         AiModelCard(vm, ai)
         return
     }
@@ -587,6 +591,44 @@ private fun ObjectHint(vm: LightCraftViewModel, ai: AiModelStatus) {
         Text("Tap the photo to select an object.", fontFamily = Inter, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.weight(1f))
     }
 }
+
+/** The small Object model's download card: what it is, its size and licence, Download / Cancel. */
+@Composable
+private fun QuickSelectCard(vm: LightCraftViewModel, q: QuickSelectStatus) {
+    var confirm by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
+        Text("Tap to select (small model)", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Lc.text)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "EfficientSAM-Ti selects the object you tap. It is an optional ${mb(q.size)} download from its public source (${q.licence.ifBlank { "Apache-2.0" }}, not LightCraft's) and runs on this phone.",
+            fontFamily = Inter, fontSize = 12.sp, color = Lc.label,
+        )
+        q.error?.let { Text(it, fontFamily = Inter, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.padding(top = 4.dp)) }
+        Spacer(Modifier.height(8.dp))
+        if (q.downloading) {
+            val f = if (q.total > 0) q.done.toFloat() / q.total else 0f
+            LinearProgressIndicator(progress = { f }, Modifier.fillMaxWidth().height(2.dp), color = Lc.accent, trackColor = Lc.track)
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("${mb(q.done)} of ${mb(q.total.takeIf { it > 0 } ?: q.size)}", style = Numbers, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.weight(1f))
+                LcButton("Cancel", onClick = vm::cancelQuickSelect)
+            }
+        } else {
+            LcButton("Download ${mb(q.size)}", on = true) { confirm = true }
+        }
+    }
+    if (confirm) {
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            containerColor = Lc.chrome,
+            title = { Text("Download EfficientSAM-Ti?", fontFamily = Inter, color = Lc.text) },
+            text = { Text("${mb(q.size)} under ${q.licence.ifBlank { "Apache-2.0" }}. It stays on this phone.", fontFamily = Inter, color = Lc.label) },
+            confirmButton = { LcButton("Accept and download", on = true) { confirm = false; vm.downloadQuickSelect() } },
+            dismissButton = { LcButton("Cancel") { confirm = false } },
+        )
+    }
+}
+
+private fun mb(bytes: Long): String = if (bytes <= 0) "small" else "${(bytes + 500_000) / 1_000_000} MB"
 
 @Composable
 private fun DescribeBox(vm: LightCraftViewModel, ai: AiModelStatus) {

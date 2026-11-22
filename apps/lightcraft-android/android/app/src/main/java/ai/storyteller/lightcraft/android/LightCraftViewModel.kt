@@ -11,6 +11,7 @@ import java.util.concurrent.Executors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -137,6 +138,20 @@ data class AiModelStatus(
     val error: String? = null,
     /** How many download locations are configured (0: none, so the download needs a source). */
     val mirrors: Int = 0,
+)
+
+/**
+ * The small tap-to-select model (EfficientSAM-Ti, `ai.models` id `efficientsam-ti`): Object uses it
+ * when SAM 3 isn't installed. It downloads from its pinned public source, no account needed.
+ */
+data class QuickSelectStatus(
+    val ready: Boolean = false,
+    val downloading: Boolean = false,
+    val done: Long = 0,
+    val total: Long = 0,
+    val size: Long = 0,
+    val licence: String = "",
+    val error: String? = null,
 )
 
 /** Where SAM 3 downloads from: Meta's gated Hugging Face page with the person's own token, or a mirror. */
@@ -744,6 +759,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             ToolKind.Object, ToolKind.Describe -> {
                 _tool.value = if (_tool.value?.id == tool.id) null else tool
                 refreshAiStatus()
+                refreshQuickSelect()
             }
             else -> {
                 _tool.value = null
@@ -1279,6 +1295,67 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     /** The Object mask the taps refine (null: the next tap makes a new one). */
     private var objectMask: Int? = null
 
+    /** The taps of the Object mask made with the small model (x, y on the photo, include). */
+    private val quickTaps = mutableListOf<Triple<Double, Double, Boolean>>()
+
+    private val _quickSelect = MutableStateFlow(QuickSelectStatus())
+    /** The small Object model's state (used while SAM 3 isn't installed). */
+    val quickSelect: StateFlow<QuickSelectStatus> = _quickSelect.asStateFlow()
+
+    private var quickPolling = false
+
+    /** Read the small model's state; while it downloads, read it again every second. Command thread. */
+    private fun readQuickSelect() {
+        val e = engine ?: return
+        val r = runCatching { e.execute("ai.models") as? JSONObject }.getOrNull() ?: return
+        val list = r.optJSONArray("models") ?: return
+        val m = (0 until list.length()).mapNotNull { list.optJSONObject(it) }.firstOrNull { it.optString("id") == QUICK_SELECT } ?: return
+        val dl = m.optJSONObject("download")
+        val state = dl?.optString("state", "") ?: ""
+        _quickSelect.value = QuickSelectStatus(
+            ready = m.optBoolean("ready"),
+            downloading = state == "downloading",
+            done = dl?.optLong("done") ?: 0,
+            total = dl?.optLong("total") ?: 0,
+            size = m.optLong("size"),
+            licence = m.optString("licence"),
+            error = dl?.optString("error")?.takeIf { state == "failed" && it.isNotBlank() },
+        )
+        if (_quickSelect.value.downloading && !quickPolling) {
+            quickPolling = true
+            viewModelScope.launch {
+                try {
+                    while (true) {
+                        delay(1000)
+                        withContext(commands) { readQuickSelect() }
+                        if (!_quickSelect.value.downloading) break
+                    }
+                } finally {
+                    quickPolling = false
+                }
+            }
+        }
+    }
+
+    fun refreshQuickSelect() {
+        viewModelScope.launch(commands) { readQuickSelect() }
+    }
+
+    /** Download the small Object model (after the person accepted its licence in the card). */
+    fun downloadQuickSelect() {
+        viewModelScope.launch(commands) {
+            withEngine { e -> e.execute("ai.download", JSONObject().put("id", QUICK_SELECT).put("acknowledged", true)) }
+            readQuickSelect()
+        }
+    }
+
+    fun cancelQuickSelect() {
+        viewModelScope.launch(commands) {
+            withEngine { e -> e.execute("ai.cancelDownload", JSONObject().put("id", QUICK_SELECT)) }
+            readQuickSelect()
+        }
+    }
+
     fun objectTap(u: Float, v: Float, exclude: Boolean) {
         val photo = _editing.value ?: return
         val first = objectMask == null || objectMask != _activeMask.value
@@ -1287,7 +1364,15 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 withEngine { e ->
                     val (x, y) = e.viewToImage(photo, u, v) ?: return@withEngine
-                    if (first) {
+                    if (!_ai.value.installed) {
+                        // the small model: every tap so far goes with each request (it reruns quickly)
+                        if (first) quickTaps.clear()
+                        quickTaps += Triple(x.toDouble(), y.toDouble(), first || !exclude)
+                        val taps = JSONArray(quickTaps.map { (tx, ty, inc) -> JSONArray(listOf(tx, ty, inc)) })
+                        val p = JSONObject().put("taps", taps)
+                        if (!first) objectMask?.let { p.put("id", it) }
+                        e.execute("ai.select", p)
+                    } else if (first) {
                         val pt = JSONArray(listOf(JSONArray(listOf(x.toDouble(), y.toDouble()))))
                         e.execute("mask.add", JSONObject().put("kind", "object").put("name", "Object").put("points", pt))
                     } else {
@@ -1683,3 +1768,6 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         commands.close()
     }
 }
+
+/** The small tap-to-select model's id in `ai.models`. */
+private const val QUICK_SELECT = "efficientsam-ti"

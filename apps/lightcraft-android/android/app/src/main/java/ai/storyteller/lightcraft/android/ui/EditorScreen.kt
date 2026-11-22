@@ -106,7 +106,8 @@ fun EditorScreen(vm: LightCraftViewModel, photo: Long, snackbar: SnackbarHostSta
     val stroke = remember { mutableStateListOf<Offset>() }
     val removing = tab == MainTab.Remove
     val painting = tab == MainTab.Masking && tool?.kind == ToolKind.Brush && activeMask != null
-    val tapping = tab == MainTab.Masking && tool?.kind == ToolKind.Object && ai.installed
+    val quick by vm.quickSelect.collectAsStateWithLifecycle()
+    val tapping = tab == MainTab.Masking && tool?.kind == ToolKind.Object && (ai.installed || quick.ready)
     val picking = wbPicking && tab == MainTab.Edit
     val cropping = tab == MainTab.Crop
     val cropView by vm.cropView.collectAsStateWithLifecycle()
