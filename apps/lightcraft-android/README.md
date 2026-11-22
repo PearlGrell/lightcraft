@@ -56,9 +56,12 @@ exports go through the engine's one encoder (`lightcraft_engine::export`).
   `lightcraft-bgremove` crate.
 - **Export / share**: JPEG through the engine's exporter, handed to the Android share sheet.
 
-**Brand mark**: `res/drawable/ic_brand_mark.xml` (library header) and `ic_launcher_*.xml` (launcher)
-are original artwork (an amber "Lc" monogram on an espresso tile). Replace those files, keeping their names, to rebrand. Adobe's logos and other
-Adobe assets may not be used (see `CLAUDE.md`).
+**App icon**: the LightCraft lynx (`assets/app-icon/`, the project owner's artwork, MIT OR Apache-2.0) as
+an adaptive icon: the amber field as background, the lynx in the safe zone as foreground
+(`mipmap-*/ic_launcher_foreground.png`) and its ink line work as the themed-icon layer
+(`ic_launcher_monochrome.png`); `drawable-nodpi/ic_brand_mark.png` is the library header mark. Regenerate
+them from `assets/app-icon/lightcraft-1024.png` when the app icon changes. Adobe's logos and other Adobe
+assets may not be used (see `AGENTS.md`).
 
 ## Build
 
