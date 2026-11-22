@@ -17,15 +17,18 @@ data class Control(
     companion object {
         fun fromJson(o: JSONObject): Control {
             val id = o.getString("id")
+            val default = o.optDouble("default", 0.0).toFloat()
+            val value = o.optDouble("value", default.toDouble()).toFloat()
+            val (min, max) = phoneRange(id, o.optDouble("min", -100.0).toFloat(), o.optDouble("max", 100.0).toFloat(), value)
             return Control(
                 id = id,
                 label = o.optString("label", id),
                 section = o.optString("section", ""),
-                min = o.optDouble("min", -100.0).toFloat(),
-                max = o.optDouble("max", 100.0).toFloat(),
-                default = o.optDouble("default", 0.0).toFloat(),
+                min = min,
+                max = max,
+                default = default,
                 decimals = o.optInt("decimals", 0),
-                value = o.optDouble("value", o.optDouble("default", 0.0)).toFloat(),
+                value = value,
                 unit = when (id) {
                     "light.exposure" -> "EV"
                     "wb.temp" -> "K"
@@ -34,6 +37,21 @@ data class Control(
             )
         }
     }
+}
+
+/** Exposure on the phone: ±2.5 EV across the track (edits rarely go further), so small steps are reachable. */
+const val PHONE_EXPOSURE_EV = 2.5f
+
+/**
+ * The slider span for [id] on the phone. The engine's ±5 EV exposure squeezes 0.05 EV into a
+ * couple of pixels on a phone-width track, so exposure spans ±[PHONE_EXPOSURE_EV]; a photo edited
+ * further elsewhere widens it to keep its [value] on the track. Every other control keeps the
+ * engine's range.
+ */
+fun phoneRange(id: String, min: Float, max: Float, value: Float): Pair<Float, Float> {
+    if (id != "light.exposure") return min to max
+    val reach = maxOf(PHONE_EXPOSURE_EV, kotlin.math.abs(value))
+    return maxOf(min, -reach) to minOf(max, reach)
 }
 
 /**
@@ -68,9 +86,18 @@ object Tools {
             groups = listOf(
                 Group("Color", listOf("wb.", "color.")),
                 Group("Mix", listOf("mixer.")),
-                Group("Grading", listOf("grading.")),
                 Group("B&W", listOf("bw.")),
                 Group("Calibration", listOf("calibration.")),
+            ),
+        ),
+        Tool(
+            "grading", "Grading",
+            groups = listOf(
+                Group("Shadows", listOf("grading.shadows.")),
+                Group("Midtones", listOf("grading.midtones.")),
+                Group("Highlights", listOf("grading.highlights.")),
+                Group("Global", listOf("grading.global.")),
+                Group("Blend", listOf("grading.blending", "grading.balance")),
             ),
         ),
         Tool("curve", "Curve", ToolKind.Curve),
@@ -107,7 +134,7 @@ object Tools {
     )
 
     val local = listOf(
-        LocalSlider("exposure", "Exposure", -4f, 4f, 2),
+        LocalSlider("exposure", "Exposure", -PHONE_EXPOSURE_EV, PHONE_EXPOSURE_EV, 2),
         LocalSlider("contrast", "Contrast", -100f, 100f),
         LocalSlider("highlights", "Highlights", -100f, 100f),
         LocalSlider("shadows", "Shadows", -100f, 100f),

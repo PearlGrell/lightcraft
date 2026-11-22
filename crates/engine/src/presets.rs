@@ -620,6 +620,19 @@ mod tests {
         assert_eq!(slug("B&W/Film 2"), "b-w-film-2");
     }
 
+    #[test]
+    fn created_preset_ids_stay_unique_after_a_delete() {
+        let mut s = Session::with_demo();
+        let id = |v: serde_json::Value| v["id"].as_str().unwrap().to_string();
+        let a = id(s.execute("preset.create", &json!({"name": "Mine"})).unwrap());
+        let b = id(s.execute("preset.create", &json!({"name": "Mine"})).unwrap());
+        s.execute("preset.delete", &json!({"id": a})).unwrap();
+        // the count is back to what it was when `b` was made: the new id must not repeat it
+        let c = id(s.execute("preset.create", &json!({"name": "Mine"})).unwrap());
+        assert_ne!(b, c);
+        assert_eq!(s.presets.iter().filter(|p| p.id == b || p.id == c).count(), 2);
+    }
+
     fn dir(tag: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("lc-presets-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);

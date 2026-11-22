@@ -35,6 +35,7 @@ import androidx.compose.material.icons.automirrored.outlined.Redo
 import androidx.compose.material.icons.automirrored.outlined.RotateLeft
 import androidx.compose.material.icons.automirrored.outlined.RotateRight
 import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.AutoFixHigh
 import androidx.compose.material.icons.outlined.CameraAlt
@@ -47,6 +48,7 @@ import androidx.compose.material.icons.outlined.Details
 import androidx.compose.material.icons.outlined.Flip
 import androidx.compose.material.icons.outlined.Gradient
 import androidx.compose.material.icons.outlined.InvertColors
+import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.RestartAlt
@@ -59,14 +61,18 @@ import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Vignette
 import androidx.compose.material.icons.outlined.Wallpaper
 import androidx.compose.material.icons.outlined.WbSunny
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -102,9 +108,11 @@ import ai.storyteller.lightcraft.android.Control
 import ai.storyteller.lightcraft.android.EraseSettings
 import ai.storyteller.lightcraft.android.LightCraftViewModel
 import ai.storyteller.lightcraft.android.MainTab
+import ai.storyteller.lightcraft.android.Preset
 import ai.storyteller.lightcraft.android.Tool
 import ai.storyteller.lightcraft.android.ToolKind
 import ai.storyteller.lightcraft.android.Tools
+import ai.storyteller.lightcraft.android.USER_PRESETS
 
 /**
  * The editor: the photo edge to edge on black with a few icons over its top corner (back; undo,
@@ -357,15 +365,20 @@ private fun SliderPanel(vm: LightCraftViewModel, tool: Tool, all: List<Control>)
         LazyColumn(Modifier.fillMaxWidth().heightIn(max = 210.dp), contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 6.dp, bottom = 4.dp)) {
             items(controls, key = { it.id }) { c ->
                 LrSlider(
-                    c.label, c.value, c.min, c.max, c.default, c.decimals, c.unit,
+                    shortLabel(c.label, group.title), c.value, c.min, c.max, c.default, c.decimals, c.unit,
                     onChange = { vm.setControl(c.id, it) },
                     onDone = vm::finishInteraction,
                     onReset = { vm.resetControl(c.id) },
+                    track = if (c.id.startsWith("grading.")) gradingTrack(c.id, all.firstOrNull { it.id == c.id.replace(".sat", ".hue") }?.value) else null,
                 )
             }
         }
     }
 }
+
+/** "Shadows Hue" under the Shadows pill reads "Hue": the pill already names the zone. */
+internal fun shortLabel(label: String, group: String): String =
+    label.removePrefix("$group ").takeIf { it != label && it.isNotBlank() }?.replaceFirstChar { it.uppercase() } ?: label
 
 @Composable
 internal fun Pills(titles: List<String>, selected: Int, onSelect: (Int) -> Unit, onReset: (() -> Unit)?) {
@@ -401,12 +414,32 @@ private fun PresetPanel(vm: LightCraftViewModel) {
     val group = groups.getOrNull(selected) ?: groups.firstOrNull()
     val shown = presets.filter { it.group.ifEmpty { "Presets" } == group }
     var applied by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf<Preset?>(null) }
+    // after a save, show the group it went to
+    var goTo by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(groups, goTo) {
+        val i = goTo?.let { groups.indexOf(it) } ?: -1
+        if (i >= 0) {
+            selected = i
+            goTo = null
+        }
+    }
     LaunchedEffect(shown.map { it.id }) { vm.loadPresetThumbs(shown.map { it.id }) }
     Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
         Pills(groups.map { "Style: $it" }.ifEmpty { listOf("Presets") }, groups.indexOf(group).coerceAtLeast(0), { selected = it }, onReset = null)
         LazyRow(contentPadding = PaddingValues(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            item(key = "save") { SavePresetTile { saving = true } }
             items(shown, key = { it.id }) { p ->
-                Column(Modifier.width(84.dp).clickable { applied = p.id; vm.applyPreset(p.id) }, horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    Modifier.width(84.dp).pointerInput(p.id) {
+                        detectTapGestures(
+                            onTap = { applied = p.id; vm.applyPreset(p.id) },
+                            onLongPress = { if (!p.builtin) deleting = p },
+                        )
+                    },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                     Box(
                         Modifier
                             .size(84.dp)
@@ -420,7 +453,95 @@ private fun PresetPanel(vm: LightCraftViewModel) {
                 }
             }
         }
+        if (shown.any { !it.builtin }) {
+            Text("Long-press a preset you saved to delete it", fontSize = 11.sp, color = Lc.muted, modifier = Modifier.padding(start = 16.dp, top = 6.dp))
+        }
     }
+    if (saving) {
+        val userGroups = presets.filter { !it.builtin }.map { it.group }.filter { it.isNotBlank() }.distinct()
+        SavePresetDialog(
+            groups = (listOf(USER_PRESETS) + userGroups).distinct(),
+            onDismiss = { saving = false },
+            onSave = { name, g ->
+                saving = false
+                goTo = g.trim().ifEmpty { USER_PRESETS }
+                vm.savePreset(name, g)
+            },
+        )
+    }
+    deleting?.let { p ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("Delete “${p.name}”?") },
+            text = { Text("The preset is removed from LightCraft. Photos it was applied to keep their edits.") },
+            confirmButton = { TextButton(onClick = { deleting = null; vm.deletePreset(p) }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
+            containerColor = Lc.chrome,
+            titleContentColor = Lc.text,
+            textContentColor = Lc.label,
+        )
+    }
+}
+
+/** The first tile of the presets strip: saves the current look as a new preset. */
+@Composable
+internal fun SavePresetTile(onClick: () -> Unit) {
+    Column(Modifier.width(84.dp).clickable(onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier.size(84.dp).clip(RoundedCornerShape(6.dp)).border(1.dp, Lc.muted, RoundedCornerShape(6.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Outlined.Add, contentDescription = "Save preset", tint = Lc.text, modifier = Modifier.size(30.dp))
+        }
+        Text("Save preset", fontSize = 12.sp, color = Lc.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp))
+    }
+}
+
+/** Name the new preset and pick (or type) its group. */
+@Composable
+internal fun SavePresetDialog(groups: List<String>, onDismiss: () -> Unit, onSave: (name: String, group: String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var group by remember { mutableStateOf(groups.firstOrNull() ?: USER_PRESETS) }
+    val colors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = Lc.text,
+        unfocusedTextColor = Lc.text,
+        focusedBorderColor = Lc.accent,
+        unfocusedBorderColor = Lc.muted,
+        focusedLabelColor = Lc.accent,
+        unfocusedLabelColor = Lc.label,
+        cursorColor = Lc.accent,
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Save preset") },
+        text = {
+            Column {
+                Text("Saves every adjustment of this photo except crop, masks and spot removal.", fontSize = 13.sp, color = Lc.label)
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(name, { name = it.take(80) }, label = { Text("Name") }, singleLine = true, colors = colors, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(group, { group = it.take(80) }, label = { Text("Group") }, singleLine = true, colors = colors, modifier = Modifier.fillMaxWidth())
+                if (groups.size > 1) {
+                    LazyRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(groups) { g ->
+                            val on = g == group
+                            Text(
+                                g,
+                                fontSize = 13.sp,
+                                color = if (on) Color.White else Lc.label,
+                                modifier = Modifier.clip(RoundedCornerShape(14.dp)).background(if (on) Lc.accent else Lc.raised).clickable { group = g }.padding(horizontal = 10.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(name, group) }, enabled = name.isNotBlank()) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        containerColor = Lc.chrome,
+        titleContentColor = Lc.text,
+        textContentColor = Lc.text,
+    )
 }
 
 @Composable
@@ -489,8 +610,9 @@ private fun MaskPanel(vm: LightCraftViewModel) {
         if (mask != null) {
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 200.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 4.dp)) {
                 items(Tools.local, key = { it.key }) { s ->
+                    val v = mask.adjust[s.key] ?: 0f
                     LrSlider(
-                        s.label, mask.adjust[s.key] ?: 0f, s.min, s.max, 0f, s.decimals, if (s.key == "exposure") "EV" else "",
+                        s.label, v, minOf(s.min, v), maxOf(s.max, v), 0f, s.decimals, if (s.key == "exposure") "EV" else "",
                         onChange = { vm.setMaskValue(s.key, it) },
                         onDone = vm::finishInteraction,
                         onReset = { vm.setMaskValue(s.key, 0f); vm.finishInteraction() },
@@ -570,6 +692,7 @@ private fun iconOf(t: Tool, tab: MainTab): ImageVector = when (tab) {
         "auto" -> Icons.Outlined.AutoAwesome
         "light" -> Icons.Outlined.WbSunny
         "color" -> Icons.Outlined.Thermostat
+        "grading" -> Icons.Outlined.Palette
         "curve" -> LcIcons.Curve
         "effects" -> Icons.Outlined.Vignette
         "detail" -> Icons.Outlined.Details

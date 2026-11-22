@@ -19,8 +19,11 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** A develop preset (`presets.list`). */
-data class Preset(val id: String, val name: String, val group: String)
+/** A develop preset (`presets.list`); [builtin] ones ship with LightCraft and can't be deleted. */
+data class Preset(val id: String, val name: String, val group: String, val builtin: Boolean = true)
+
+/** The group a preset saved on the phone goes to unless the user names another. */
+const val USER_PRESETS = "User Presets"
 
 /** A point of a tone curve, both coordinates 0..1. */
 data class CurvePoint(val x: Float, val y: Float)
@@ -369,13 +372,47 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     fun applyPreset(id: String) = runEdit("preset.apply", JSONObject().put("id", id))
 
-    private fun loadPresets() {
+    /**
+     * Save the photo's current look as a preset (`preset.create`: every setting but crop, masks and
+     * spot removal, as the desktop's New Preset). The library keeps it in `presets.json`, so it is
+     * there on the next start and on every photo.
+     */
+    fun savePreset(name: String, group: String) {
+        val clean = name.trim()
+        if (clean.isEmpty()) return
         viewModelScope.launch(commands) {
-            val list = runCatching { engine?.execute("presets.list") as? JSONArray }.getOrNull() ?: return@launch
-            _presets.value = (0 until list.length()).mapNotNull { i ->
-                list.optJSONObject(i)?.let { Preset(it.optString("id"), it.optString("name"), it.optString("group", "")) }
-            }.filter { it.id.isNotEmpty() }
+            if (interacting) {
+                interacting = false
+                withEngine { e -> e.execute("develop.endInteraction") }
+            }
+            withEngine { e ->
+                e.execute("preset.create", JSONObject().put("name", clean).put("group", group.trim().ifEmpty { USER_PRESETS }))
+                messages.trySend("Saved preset “$clean”")
+            }
+            readPresets()
         }
+    }
+
+    /** Delete a preset saved by the user (built-in ones stay). */
+    fun deletePreset(preset: Preset) {
+        if (preset.builtin) return
+        viewModelScope.launch(commands) {
+            withEngine { e -> e.execute("preset.delete", JSONObject().put("id", preset.id)) }
+            _presetThumbs.value = _presetThumbs.value - preset.id
+            readPresets()
+        }
+    }
+
+    private fun loadPresets() {
+        viewModelScope.launch(commands) { readPresets() }
+    }
+
+    /** `presets.list` → [presets]. Command thread only. */
+    private fun readPresets() {
+        val list = runCatching { engine?.execute("presets.list") as? JSONArray }.getOrNull() ?: return
+        _presets.value = (0 until list.length()).mapNotNull { i ->
+            list.optJSONObject(i)?.let { Preset(it.optString("id"), it.optString("name"), it.optString("group", ""), it.optBoolean("builtin", true)) }
+        }.filter { it.id.isNotEmpty() }
     }
 
     /** Thumbnails for the presets strip, rendered on demand and kept for this photo. */

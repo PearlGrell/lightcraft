@@ -995,7 +995,14 @@ pub fn specs() -> Vec<CommandSpec> {
             let group = str_param(p, "group").unwrap_or("User Presets");
             let groups = groups_param(p, c)?.unwrap_or_else(SettingsGroup::default_copy);
             let d = s.develop_of(id).unwrap_or_default();
-            let pid = format!("user.{}.{}", s.presets.len(), name.to_lowercase().replace(' ', "-"));
+            // the count alone repeats after a delete: step past ids already taken
+            let slug = name.to_lowercase().replace(' ', "-");
+            let mut n = s.presets.len();
+            let mut pid = format!("user.{n}.{slug}");
+            while s.presets.iter().any(|x| x.id == pid) {
+                n = n.saturating_add(1);
+                pid = format!("user.{n}.{slug}");
+            }
             s.presets.push(Preset::from_settings(&pid, name, group, &d, &groups));
             Ok(json!({"id": pid}))
         }),

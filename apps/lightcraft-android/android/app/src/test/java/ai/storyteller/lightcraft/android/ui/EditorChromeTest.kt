@@ -91,11 +91,36 @@ class EditorChromeTest {
         LightCraftTheme {
             Editor(MainTab.Edit, {
                 Column(Modifier.padding(horizontal = 22.dp, vertical = 6.dp)) {
-                    LrSlider("Exposure", 0.2f, -5f, 5f, 0f, 2, "EV", {}, {}, {})
+                    LrSlider("Exposure", 0.2f, -2.5f, 2.5f, 0f, 2, "EV", {}, {}, {})
                     LrSlider("Contrast", 37f, -100f, 100f, 0f, 0, "", {}, {}, {})
                     LrSlider("Highlights", -84f, -100f, 100f, 0f, 0, "", {}, {}, {})
                 }
             }, compare = true)
+        }
+    }
+
+    @Test
+    fun grading() = paparazzi.snapshot {
+        LightCraftTheme {
+            Editor(MainTab.Edit, {
+                Column {
+                    Pills(listOf("Shadows", "Midtones", "Highlights", "Global", "Blend"), 1, {}, onReset = {})
+                    Column(Modifier.padding(horizontal = 22.dp, vertical = 6.dp)) {
+                        LrSlider("Hue", 32f, 0f, 360f, 0f, 0, "", {}, {}, {}, track = gradingTrack("grading.midtones.hue", null))
+                        LrSlider("Saturation", 24f, 0f, 100f, 0f, 0, "", {}, {}, {}, track = gradingTrack("grading.midtones.sat", 32f))
+                        LrSlider("Luminance", -10f, -100f, 100f, 0f, 0, "", {}, {}, {}, track = gradingTrack("grading.midtones.lum", null))
+                    }
+                }
+            })
+        }
+    }
+
+    @Test
+    fun presets() = paparazzi.snapshot {
+        LightCraftTheme {
+            Editor(MainTab.Presets, {
+                Row(Modifier.padding(14.dp)) { SavePresetTile {} }
+            })
         }
     }
 

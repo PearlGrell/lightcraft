@@ -26,11 +26,17 @@ exports go through the engine's one encoder (`lightcraft_engine::export`).
   hold for the original, Compare for a draggable before/after split); back, undo, redo, compare and
   share float over it. At the bottom, the open tool's panel, a tool row, and a six-tab bar:
   **Quick** (Auto, Pop, Sky, B&W, Remove BG, Reset), **Presets** (live thumbnail strip rendered with
-  `Mobile::preset_thumbnail`, which never applies the preset), **Crop** (aspect ratios, rotate,
-  flip, straighten), **Edit** (Auto | Light, Color, Curve, Effects, Detail, Optics, Geometry),
+  `Mobile::preset_thumbnail`, which never applies the preset; the first tile, **Save preset**, saves
+  the current look with `preset.create` into a named group, kept in the library's `presets.json`;
+  long-press a saved preset to delete it), **Crop** (aspect ratios, rotate,
+  flip, straighten), **Edit** (Auto | Light, Color, Grading, Curve, Effects, Detail, Optics, Geometry;
+  Grading has Shadows, Midtones, Highlights, Global and Blend, with hue, saturation and luminance
+  sliders drawn on their colour gradients),
   **Masking** and **Remove**. Every slider comes from the engine's control list
   (`develop.controls`), grouped by id prefix in `Tools.kt`. Sliders scrub relative to the finger,
-  snap to their default with a haptic tick, reset on double-tap; one drag is one undo step.
+  snap to their default within 2 dp with a haptic tick, round to the value's shown precision, reset
+  on double-tap; one drag is one undo step. Exposure spans ±2.5 EV on the phone (half the engine's
+  ±5, widened when a photo is edited further) so steps like 0.05 EV are easy to hit.
 - **Point tone curve** (`ui/CurveEditor.kt`): RGB, Red, Green and Blue; tap to add a point, drag to
   move it, drag an inner point off the grid to remove it (`develop.curve`).
 - **AI masks** (Masking tab): Subject and Background come from ML Kit Subject Segmentation
