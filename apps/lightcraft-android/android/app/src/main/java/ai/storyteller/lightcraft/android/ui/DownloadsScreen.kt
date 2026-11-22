@@ -79,7 +79,8 @@ fun DownloadsScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
             Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).navigationBarsPadding()) {
                 Heading("Models", "Downloaded on demand, smallest first. Photos never leave the phone.")
                 SegModelRow(vm, seg)
-                models.sortedBy { it.size }.forEach { LcModelRow(vm, it) }
+                val busy = models.any { it.downloading }
+                models.sortedBy { it.size }.forEach { LcModelRow(vm, it, busy) }
                 Heading("Storage", "What LightCraft keeps on this phone. Your photos stay in the gallery and aren't counted here.")
                 StorageRows(vm, storage)
                 Spacer(Modifier.height(24.dp))
@@ -135,7 +136,7 @@ internal fun ItemCard(
         }
         if (progress != null) {
             Spacer(Modifier.height(10.dp))
-            LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, Modifier.fillMaxWidth().height(2.dp), color = Lc.accent, trackColor = Lc.track)
+            LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, Modifier.fillMaxWidth().height(4.dp), color = Lc.accent, trackColor = Lc.track)
         }
         if (actions != null) androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp)) { actions() }
     }
@@ -169,12 +170,12 @@ private fun SegModelRow(vm: LightCraftViewModel, seg: SegModelStatus) {
 
 /** One of LightCraft's own optional models: what it does, size, licence, download / cancel / delete. */
 @Composable
-private fun LcModelRow(vm: LightCraftViewModel, m: ai.storyteller.lightcraft.android.LcAiModel) {
+private fun LcModelRow(vm: LightCraftViewModel, m: ai.storyteller.lightcraft.android.LcAiModel, busy: Boolean) {
     var confirm by remember { mutableStateOf<String?>(null) }
     val total = m.total.takeIf { it > 0 } ?: m.size
     val state = when {
-        m.downloading -> "Downloading… ${mb(m.done)} of ${mb(total)}"
-        m.ready -> "Installed"
+        m.downloading -> "Downloading… ${if (total > 0) "${(m.done * 100 / total).coerceIn(0, 100)} %, " else ""}${mb(m.done)} of ${mb(total)}"
+        m.ready -> "Installed. Ready to use."
         m.error != null -> "Not installed: ${m.error}"
         else -> "Not installed"
     }
@@ -190,6 +191,7 @@ private fun LcModelRow(vm: LightCraftViewModel, m: ai.storyteller.lightcraft.and
         when {
             m.downloading -> LcButton("Cancel") { vm.cancelLcModel(m.id) }
             m.ready -> LcButton("Delete") { confirm = "delete" }
+            busy -> LcButton("Download", enabled = false) {}
             else -> LcButton("Download", on = true) { confirm = "download" }
         }
     }

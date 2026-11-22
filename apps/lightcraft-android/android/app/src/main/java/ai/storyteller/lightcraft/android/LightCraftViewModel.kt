@@ -1365,6 +1365,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
         val list = r.optJSONArray("models") ?: return
         _aiModels.value = (0 until list.length()).mapNotNull { list.optJSONObject(it) }.map { m ->
             val dl = m.optJSONObject("download")
+            // the engine's download states: running, done, failed, cancelled
             val state = dl?.optString("state", "") ?: ""
             LcAiModel(
                 id = m.optString("id"),
@@ -1373,12 +1374,13 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 size = m.optLong("size"),
                 licence = m.optString("licence"),
                 ready = m.optBoolean("ready"),
-                downloading = state == "downloading",
+                downloading = state == "running",
                 done = dl?.optLong("done") ?: 0,
                 total = dl?.optLong("total") ?: 0,
                 error = dl?.optString("error")?.takeIf { state == "failed" && it.isNotBlank() },
             )
         }
+        reportDownloads()
         _aiModels.value.firstOrNull { it.id == QUICK_SELECT }?.let { m ->
             _quickSelect.value = QuickSelectStatus(m.ready, m.downloading, m.done, m.total, m.size, m.licence, m.error)
         }
@@ -1403,17 +1405,52 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Download the small Object model (after the person accepted its licence in the card). */
-    fun downloadQuickSelect() {
-        viewModelScope.launch(commands) {
-            withEngine { e -> e.execute("ai.download", JSONObject().put("id", QUICK_SELECT).put("acknowledged", true)) }
-            readQuickSelect()
+    fun downloadQuickSelect() = downloadLcModel(QUICK_SELECT)
+
+    private val notifier by lazy { DownloadNotifier(getApplication()) }
+
+    /** The model whose download the app last saw running (to tell when it ends). */
+    private var watching: String? = null
+
+    /** Asks MainActivity for the notification permission (Android 13+) at the first download. */
+    val askNotifications = Channel<Unit>(Channel.CONFLATED)
+
+    /** Progress in the notification shade; a message when a download ends. */
+    private fun reportDownloads() {
+        val models = _aiModels.value
+        val running = models.firstOrNull { it.downloading }
+        if (running != null) {
+            watching = running.id
+            notifier.progress(running.name, running.done, running.total.takeIf { it > 0 } ?: running.size)
+            return
+        }
+        val id = watching ?: return
+        watching = null
+        val m = models.firstOrNull { it.id == id } ?: return notifier.clear()
+        when {
+            m.ready -> {
+                notifier.finished(m.name, ok = true)
+                messages.trySend("${m.name} downloaded. Ready to use.")
+            }
+            m.error != null -> {
+                notifier.finished(m.name, ok = false, detail = m.error)
+                messages.trySend("${m.name} didn't download: ${m.error}")
+            }
+            else -> notifier.clear() // cancelled
         }
     }
 
     /** Download model [id] (the person accepted its licence first). */
     fun downloadLcModel(id: String) {
+        askNotifications.trySend(Unit)
         viewModelScope.launch(commands) {
-            withEngine { e -> e.execute("ai.download", JSONObject().put("id", id).put("acknowledged", true)) }
+            val name = _aiModels.value.firstOrNull { it.id == id }?.name ?: "The model"
+            var started = false
+            withEngine { e ->
+                e.execute("ai.download", JSONObject().put("id", id).put("acknowledged", true))
+                started = true
+            }
+            if (started) messages.trySend("Downloading $name… Progress shows in Downloads & Storage and in your notifications.")
             readQuickSelect()
         }
     }

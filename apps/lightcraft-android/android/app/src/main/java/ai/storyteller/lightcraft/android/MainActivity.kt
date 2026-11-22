@@ -29,6 +29,15 @@ class MainActivity : ComponentActivity() {
     private var deleting: List<GalleryImage> = emptyList()
     private var deleteMode = DeleteMode.Trash
 
+    /** Model downloads show in the notification shade once this is allowed (Android 13+). */
+    private val notificationsLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    private fun askNotifications() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        notificationsLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+    }
+
     private val deleteLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         // Android 10 asks file by file: after a yes, carry on with the rest
         if (Build.VERSION.SDK_INT < 30 && result.resultCode == RESULT_OK && deleteMode == DeleteMode.Delete) {
@@ -97,6 +106,9 @@ class MainActivity : ComponentActivity() {
                 }
                 LaunchedEffect(Unit) {
                     for (uris in vm.shareOriginals) shareOriginals(uris)
+                }
+                LaunchedEffect(Unit) {
+                    for (ask in vm.askNotifications) askNotifications()
                 }
                 val photo = editing
                 val page by vm.page.collectAsStateWithLifecycle()
