@@ -312,9 +312,10 @@ class EditorChromeTest {
                 Box(Modifier.fillMaxWidth().padding(top = 10.dp), contentAlignment = Alignment.Center) {
                     ColorWheel("Shadows", 205f, 18f, 100f, 200.dp, { _, _ -> }, {}, {})
                 }
-                GradeReadout(205f, 18f)
                 SliderList(
                     listOf(
+                        SliderSpec("h", "Hue", 205f, 0f, 360f, 0f, track = Track("rainbow")),
+                        SliderSpec("s", "Saturation", 18f, 0f, 100f, 0f, track = saturationTrack(205f)),
                         SliderSpec("l", "Luminance", -8f, -100f, 100f, 0f),
                         SliderSpec("b", "Blending", 50f, 0f, 100f, 50f),
                         SliderSpec("a", "Balance", 0f, -100f, 100f, 0f),

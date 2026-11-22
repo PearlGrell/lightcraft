@@ -4,6 +4,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +43,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import ai.storyteller.lightcraft.android.QuickSelectStatus
 import kotlin.math.roundToInt
 import androidx.compose.ui.semantics.semantics
@@ -67,9 +69,12 @@ import ai.storyteller.lightcraft.android.Engine
 import ai.storyteller.lightcraft.android.LightCraftViewModel
 import ai.storyteller.lightcraft.android.MainTab
 import ai.storyteller.lightcraft.android.Page
+import ai.storyteller.lightcraft.android.Preset
+import ai.storyteller.lightcraft.android.USER_PRESETS
 import ai.storyteller.lightcraft.android.Tool
 import ai.storyteller.lightcraft.android.ToolKind
 import ai.storyteller.lightcraft.android.Tools
+import ai.storyteller.lightcraft.android.Track
 import org.json.JSONObject
 
 internal fun Control.slider(label: String = this.label, unit: String = this.unit) = SliderSpec(id, label, value, min, max, default, decimals, unit, track)
@@ -325,15 +330,6 @@ internal fun MixerBody(mixer: List<Control>, band: Int, onBand: (Int) -> Unit, a
     }
 }
 
-/** Under a single range's wheel: "Hue 205°  Saturation 18". */
-@Composable
-internal fun GradeReadout(hue: Float, sat: Float) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
-        Text("Hue  ${hue.roundToInt()}°", fontFamily = Inter, fontSize = 14.sp, color = Lc.label)
-        Text("Saturation  ${sat.roundToInt()}", fontFamily = Inter, fontSize = 14.sp, color = Lc.label)
-    }
-}
-
 /** A mixer band: a coloured ring, with a dot inside when it is the open band. */
 @Composable
 private fun BandRing(colour: Color, on: Boolean, label: String, onClick: () -> Unit) {
@@ -362,10 +358,17 @@ private val RANGES = listOf(
     Triple("global", "Global", DeskIcon.Circle),
 )
 
+/** A grade's saturation track: grey to the colour its hue picks, so the slider shows what it adds. */
+internal fun saturationTrack(hue: Float): Track {
+    val c = Color.hsv(((hue % 360f) + 360f) % 360f, 0.85f, 0.95f)
+    val rgb = (c.red * 255).roundToInt() shl 16 or ((c.green * 255).roundToInt() shl 8) or (c.blue * 255).roundToInt()
+    return Track("gradient", from = "#5a5a5a", to = "#%06x".format(rgb and 0xFFFFFF))
+}
+
 /**
  * Color Grading, as the desktop's: the range buttons, then wheels. All shows Midtones over
- * Shadows and Highlights; one range shows its wheel large with its Hue, Saturation and
- * Luminance sliders. Blending and Balance close the flyout.
+ * Shadows and Highlights; one range shows its wheel large with Hue, Saturation and Luminance
+ * sliders under it (the wheel and the sliders move together). Blending and Balance close the flyout.
  */
 @Composable
 private fun ColorGrading(vm: LightCraftViewModel, grading: List<Control>) {
@@ -395,17 +398,26 @@ private fun ColorGrading(vm: LightCraftViewModel, grading: List<Control>) {
                     wheel("shadows", "Shadows", 116.dp)
                     wheel("highlights", "Highlights", 116.dp)
                 }
+                Text(
+                    "Pick Shadows, Midtones or Highlights above for Hue, Saturation and Luminance sliders.",
+                    fontFamily = Inter, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+                )
             }
         } else {
             Box(Modifier.fillMaxWidth().padding(top = 10.dp), contentAlignment = Alignment.Center) {
                 wheel(key, RANGES[range].second, 200.dp)
             }
+            // the wheel sets hue and saturation together; the sliders under it set each exactly
             val hue = get("grading.$key.hue")
             val sat = get("grading.$key.sat")
-            if (hue != null && sat != null) {
-                GradeReadout(hue.value, sat.value)
-            }
-            SliderList(listOfNotNull(get("grading.$key.lum")?.slider("Luminance")), controlActions(vm))
+            SliderList(
+                listOfNotNull(
+                    hue?.slider("Hue"),
+                    sat?.slider("Saturation")?.copy(track = saturationTrack(hue?.value ?: 0f)),
+                    get("grading.$key.lum")?.slider("Luminance"),
+                ),
+                controlActions(vm),
+            )
         }
         SliderList(grading.filter { it.id == "grading.blending" || it.id == "grading.balance" }.map { it.slider() }, controlActions(vm))
     }
@@ -591,7 +603,9 @@ private fun MaskPanel(vm: LightCraftViewModel, tool: Tool?) {
         SectionDivider()
         SubLabel("Adjustments")
         val specs = Tools.local.map { s ->
-            SliderSpec(s.key, s.label, mask.adjust[s.key] ?: 0f, s.min, s.max, 0f, s.decimals, "", s.track)
+            val v = mask.adjust[s.key] ?: 0f
+            // a value set further elsewhere widens the span, so touching the slider never clips it
+            SliderSpec(s.key, s.label, v, minOf(s.min, v), maxOf(s.max, v), 0f, s.decimals, "", s.track)
         }
         SliderList(specs, SliderActions(change = { k, v -> vm.setMaskValue(k, v) }, done = vm::finishInteraction, reset = { k -> vm.setMaskValue(k, 0f); vm.finishInteraction() }))
         Spacer(Modifier.height(12.dp))
@@ -819,8 +833,15 @@ private fun PresetPanel(vm: LightCraftViewModel) {
     val visible = groups.filterKeys { open[it] == true }.values.flatten().map { it.id }
     // previews are dropped after an edit: ask again whenever they are missing
     LaunchedEffect(visible, thumbs.isEmpty()) { vm.loadPresetThumbs(visible) }
+    var saving by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf<Preset?>(null) }
     Column(Modifier.fillMaxWidth()) {
-        PanelTitle("Presets") { if (applied != null) LcButton("Remove", onClick = vm::removePreset) }
+        PanelTitle("Presets") {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (applied != null) LcButton("Remove", onClick = vm::removePreset)
+                LcButton("Save", on = true) { saving = true }
+            }
+        }
         if (applied != null) {
             val name = presets.firstOrNull { it.id == applied }?.name ?: "Preset"
             LcSlider(
@@ -839,7 +860,14 @@ private fun PresetPanel(vm: LightCraftViewModel) {
                         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             row.forEach { p ->
                                 val on = applied == p.id
-                                Column(Modifier.weight(1f).clickable { vm.applyPreset(p.id) }) {
+                                Column(
+                                    Modifier.weight(1f).pointerInput(p.id, p.builtin) {
+                                        detectTapGestures(
+                                            onTap = { vm.applyPreset(p.id) },
+                                            onLongPress = { if (!p.builtin) deleting = p },
+                                        )
+                                    },
+                                ) {
                                     Box(
                                         Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(4.dp)).background(Lc.skeleton)
                                             .border(if (on) 2.dp else 0.dp, if (on) Lc.pick else Color.Transparent, RoundedCornerShape(4.dp)),
@@ -855,6 +883,88 @@ private fun PresetPanel(vm: LightCraftViewModel) {
                 }
             }
         }
+        if (presets.any { !it.builtin }) {
+            Text(
+                "Long-press a preset you saved to delete it.",
+                fontFamily = Inter, fontSize = 12.sp, color = Lc.dim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+            )
+        }
         Spacer(Modifier.height(16.dp))
+    }
+    if (saving) {
+        val mine = presets.filter { !it.builtin }.map { it.group }.filter { it.isNotBlank() }
+        SavePresetDialog(
+            groups = (listOf(USER_PRESETS) + mine).distinct(),
+            onDismiss = { saving = false },
+            onSave = { name, group ->
+                saving = false
+                val g = group.trim().ifEmpty { USER_PRESETS }
+                open[g] = true // show the group it went to
+                vm.savePreset(name, g)
+            },
+        )
+    }
+    deleting?.let { p ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            containerColor = Lc.chrome,
+            title = { Text("Delete “${p.name}”?", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Lc.text) },
+            text = { Text("The preset is removed. Photos it was applied to keep their edits.", fontFamily = Inter, fontSize = 14.sp, color = Lc.label) },
+            confirmButton = { TextButton(onClick = { deleting = null; vm.deletePreset(p) }) { Text("Delete", color = Lc.reject, fontFamily = Inter) } },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel", color = Lc.label, fontFamily = Inter) } },
+        )
+    }
+}
+
+/**
+ * Save preset: a name, and the group it goes in (type one, or tap one of the groups already
+ * holding saved presets). Saves every setting except crop, masks, spot removal and red eye.
+ */
+@Composable
+internal fun SavePresetDialog(groups: List<String>, onDismiss: () -> Unit, onSave: (name: String, group: String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var group by remember { mutableStateOf(groups.firstOrNull() ?: USER_PRESETS) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Lc.chrome,
+        title = { Text("Save Preset", fontFamily = Inter, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Lc.text) },
+        text = {
+            Column {
+                Text("Saves this photo's adjustments (not crop, masks or spot removal) to use on any photo.", fontFamily = Inter, fontSize = 13.sp, color = Lc.label)
+                Spacer(Modifier.height(12.dp))
+                DialogField("Name", name, { name = it.take(80) }, "My preset")
+                Spacer(Modifier.height(10.dp))
+                DialogField("Group", group, { group = it.take(80) }, USER_PRESETS)
+                if (groups.size > 1) {
+                    LazyRow(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(groups) { g -> LcButton(g, on = g == group) { group = g } }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(name, group) }, enabled = name.isNotBlank()) { Text("Save", color = if (name.isNotBlank()) Lc.accent else Lc.disabled, fontFamily = Inter) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Lc.label, fontFamily = Inter) } },
+    )
+}
+
+/** A labelled one-line text box in the desktop's field style. */
+@Composable
+private fun DialogField(label: String, value: String, onChange: (String) -> Unit, placeholder: String) {
+    Column {
+        Text(label, fontFamily = Inter, fontSize = 12.sp, color = Lc.dim)
+        Spacer(Modifier.height(4.dp))
+        Box(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(Lc.button).border(1.dp, Lc.buttonBorder, RoundedCornerShape(4.dp)).padding(horizontal = 10.dp, vertical = 9.dp),
+        ) {
+            if (value.isEmpty()) Text(placeholder, fontFamily = Inter, fontSize = 14.sp, color = Lc.disabled)
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                singleLine = true,
+                textStyle = TextStyle(fontFamily = Inter, fontSize = 14.sp, color = Lc.text),
+                cursorBrush = SolidColor(Lc.accent),
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = label },
+            )
+        }
     }
 }

@@ -47,7 +47,10 @@ gradient-track slider with a hollow thumb, section headers, flyout rows, bordere
   **Effects** (with Vignette and Grain), **Detail**, **Optics**, **Geometry** (Upright) and
   **Calibration**. Every slider comes from the engine's control list (`develop.controls`), with its
   track. Dials are used where three values of one colour read best (Color Mixer); Color Grading has
-  the desktop's **colour wheels**.
+  the desktop's **colour wheels**, and under a single range's wheel Hue, Saturation and Luminance
+  sliders that move with it. Sliders, dials and the ruler click into their default only within
+  2 dp of travel and land on the value's shown precision (0.05 EV, not 0.0473); exposure spans
+  ±2.5 EV on the phone (widened when a photo was edited further) so small steps are easy to set.
 - **Crop**: aspect ratios, **Auto** straighten (`crop.autoStraighten`), rotate, flip, angle.
 - **Masking**, as the desktop's panel: Create New Mask tiles (Subject, Sky, Background, Brush,
   Linear, Radial, Luminance; **Object** and **Describe** with SAM 3; Dodge and Burn), Pop Subject
@@ -58,7 +61,9 @@ gradient-track slider with a hollow thumb, section headers, flyout rows, bordere
   License) offered on phones with 6 GB of memory or more.
 - **Remove**: background removal (ML Kit matte), Magic Eraser (tolerance, feather, opacity,
   contiguous, anti-alias, sample), undo, restore, transparent PNG.
-- **Presets**: groups as sections, live thumbnails (`Mobile::preset_thumbnail`).
+- **Presets**: groups as sections, live thumbnails (`Mobile::preset_thumbnail`). **Save** names
+  the current look and its group (`preset.create`, kept in the library's `presets.json`);
+  long-press a saved preset to delete it (`preset.delete`).
 - **Export**: JPEG, PNG, WebP or AVIF, size and quality, then Save to Gallery (Pictures/LightCraft)
   or Share. **Info**: file, size, capture time, camera, lens, exposure, place; stars and flags.
 

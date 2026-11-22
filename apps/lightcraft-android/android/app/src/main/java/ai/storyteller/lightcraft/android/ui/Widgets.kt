@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.storyteller.lightcraft.android.Track
+import ai.storyteller.lightcraft.android.dragValue
 import kotlin.math.abs
 
 // The desktop's widgets (`crates/ui-egui/src/widgets.rs`) for touch: the same geometry, colours
@@ -76,6 +77,9 @@ fun trackStops(t: Track): List<Color>? = when (t.kind) {
 
 /** The colour mixer's band colours as its rings and hue tracks show them (brighter than [BandColors]). */
 val MixerColors = listOf("#f0463c", "#f39a2b", "#e8d33a", "#45c35a", "#3cc6c6", "#4677f0", "#9757ec", "#de4cc4").map(::hex)
+
+/** How close (in finger travel) a slider, dial or ruler must come to its default to click into it. */
+internal val SNAP = 2.dp
 
 /** One value as the slider's spec describes it (an engine control, a mask adjustment, a tool setting). */
 data class SliderSpec(
@@ -115,7 +119,8 @@ internal fun formatValue(v: Float, min: Float, decimals: Int, unit: String): Str
  * The desktop's develop slider: name left and value right on one line, a 2-point track under them
  * (grey, or the control's gradient), a hollow ring thumb with a gap in the track around it. Drag
  * anywhere on the row: it moves relative to where the finger started (so it never jumps), at
- * full range over the track's width; it clicks into the default with a haptic tick; double-tap
+ * full range over the track's width; within 2 dp of the default it clicks into it with a haptic
+ * tick, elsewhere it lands on the value's shown precision (0.05, not 0.0473); double-tap
  * resets, as double-clicking the name does on the desktop.
  */
 @Composable
@@ -139,8 +144,9 @@ fun LcSlider(spec: SliderSpec, actions: SliderActions, modifier: Modifier = Modi
                 ) { c, dx ->
                     c.consume()
                     val s = current
-                    v = (v + dx / (size.width - pad).coerceAtLeast(1f) * s.range).coerceIn(s.min, s.max)
-                    val snapped = if (abs(v - s.default) < s.range * 0.01f) s.default else v
+                    val travel = (size.width - pad).coerceAtLeast(1f)
+                    v = (v + dx / travel * s.range).coerceIn(s.min, s.max)
+                    val snapped = dragValue(v, s.default, SNAP.toPx() / travel * s.range, s.decimals, s.min, s.max)
                     if (snapped == s.default && s.value != s.default) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     if (snapped != s.value) actions.change(s.key, snapped)
                 }

@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Locale
 import kotlin.math.abs
+import ai.storyteller.lightcraft.android.dragValue
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.sin
@@ -106,7 +107,7 @@ fun Dial(
                     c.consume()
                     val s = current
                     v = (v + dx / travel * s.range).coerceIn(s.min, s.max)
-                    val snapped = if (abs(v - s.default) < s.range * 0.012f) s.default else v
+                    val snapped = dragValue(v, s.default, SNAP.toPx() / travel * s.range, s.decimals, s.min, s.max)
                     if (snapped == s.default && s.value != s.default) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     if (snapped != s.value) actions.change(s.key, snapped)
                 }
@@ -243,8 +244,9 @@ fun ScrubRuler(spec: DialSpec, actions: DialActions, modifier: Modifier = Modifi
                     detectHorizontalDragGestures(onDragStart = { v = current.value }, onDragEnd = actions.done, onDragCancel = actions.done) { c, dx ->
                         c.consume()
                         val s = current
-                        v = (v - dx / (size.width * 4f) * s.range).coerceIn(s.min, s.max)
-                        val snapped = if (abs(v - s.default) < s.range * 0.003f) s.default else v
+                        val travel = (size.width * 4f).coerceAtLeast(1f)
+                        v = (v - dx / travel * s.range).coerceIn(s.min, s.max)
+                        val snapped = dragValue(v, s.default, SNAP.toPx() / travel * s.range, s.decimals, s.min, s.max)
                         if (snapped == s.default && s.value != s.default) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         if (snapped != s.value) actions.change(s.key, snapped)
                     }

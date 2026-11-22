@@ -18,15 +18,18 @@ data class Control(
     companion object {
         fun fromJson(o: JSONObject): Control {
             val id = o.getString("id")
+            val default = o.optDouble("default", 0.0).toFloat()
+            val value = o.optDouble("value", default.toDouble()).toFloat()
+            val (min, max) = phoneRange(id, o.optDouble("min", -100.0).toFloat(), o.optDouble("max", 100.0).toFloat(), value)
             return Control(
                 id = id,
                 label = o.optString("label", id),
                 section = o.optString("section", ""),
-                min = o.optDouble("min", -100.0).toFloat(),
-                max = o.optDouble("max", 100.0).toFloat(),
-                default = o.optDouble("default", 0.0).toFloat(),
+                min = min,
+                max = max,
+                default = default,
                 decimals = o.optInt("decimals", 0),
-                value = o.optDouble("value", o.optDouble("default", 0.0)).toFloat(),
+                value = value,
                 unit = when (id) {
                     "light.exposure" -> "EV"
                     "wb.temp" -> "K"
@@ -36,6 +39,34 @@ data class Control(
             )
         }
     }
+}
+
+/** Exposure on the phone spans ±2.5 EV (edits rarely go further), so 0.05 EV steps are easy to hit. */
+const val PHONE_EXPOSURE_EV = 2.5f
+
+/**
+ * The span of [id]'s slider, dial and ruler on the phone. The engine's ±5 EV exposure crowds small
+ * steps together on a phone-width control, so exposure spans ±[PHONE_EXPOSURE_EV]; a photo edited
+ * further (on the desktop, by Auto or a preset) widens it to keep its [value] reachable. Every
+ * other control keeps the engine's range.
+ */
+fun phoneRange(id: String, min: Float, max: Float, value: Float): Pair<Float, Float> {
+    if (id != "light.exposure") return min to max
+    val reach = maxOf(PHONE_EXPOSURE_EV, kotlin.math.abs(value))
+    return maxOf(min, -reach) to minOf(max, reach)
+}
+
+/**
+ * Where a drag at [v] lands: on [default] when within [snapUnits] of it (the haptic click),
+ * otherwise [v] rounded to the [decimals] the value is shown with, inside [min]..[max]. The snap
+ * zone is a few dp of finger travel converted to units by the caller: a share of the range (as
+ * before) caught everything under ±0.1 EV of exposure.
+ */
+fun dragValue(v: Float, default: Float, snapUnits: Float, decimals: Int, min: Float, max: Float): Float {
+    if (kotlin.math.abs(v - default) < snapUnits) return default
+    var scale = 1.0
+    repeat(decimals.coerceIn(0, 6)) { scale *= 10.0 }
+    return (kotlin.math.round(v * scale) / scale).toFloat().coerceIn(min, max)
 }
 
 /**
@@ -145,7 +176,7 @@ object Tools {
     val local = listOf(
         LocalSlider("temp", "Temp", -100f, 100f, track = Track("temp")),
         LocalSlider("tint", "Tint", -100f, 100f, track = Track("tint")),
-        LocalSlider("exposure", "Exposure", -4f, 4f, 2),
+        LocalSlider("exposure", "Exposure", -PHONE_EXPOSURE_EV, PHONE_EXPOSURE_EV, 2),
         LocalSlider("contrast", "Contrast", -100f, 100f),
         LocalSlider("highlights", "Highlights", -100f, 100f),
         LocalSlider("shadows", "Shadows", -100f, 100f),
