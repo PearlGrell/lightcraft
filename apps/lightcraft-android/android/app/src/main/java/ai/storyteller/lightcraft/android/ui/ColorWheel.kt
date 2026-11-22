@@ -86,22 +86,20 @@ fun ColorWheel(
         ) {
             val r = this.size.width / 2f
             val c = Offset(r, r)
-            // hue around the rim (counter-clockwise from the right, as the angle the puck reports)
-            val hues = List(13) { i -> Color.hsv(((360 - i * 30) % 360).toFloat(), 0.75f, 0.85f) }
+            // hue around the rim (counter-clockwise from the right, as the angle the puck reports),
+            // fully saturated at the rim and white only near the centre
+            val hues = List(13) { i -> Color.hsv(((360 - i * 30) % 360).toFloat(), 0.78f, 1f) }
             drawCircle(Brush.sweepGradient(hues, c), r, c)
-            // fading to the neutral centre
-            drawCircle(Brush.radialGradient(listOf(Color(0xFF8A8A8A), Color(0x008A8A8A)), c, r), r, c)
-            drawCircle(Lc.chrome.copy(alpha = 0.18f), r, c)
-            drawCircle(Lc.buttonBorder, r, c, style = Stroke(1.dp.toPx()))
-            // crosshair at the centre
-            val t = 4.dp.toPx()
-            drawLine(Lc.dim, Offset(r - t, r), Offset(r + t, r), 1.dp.toPx())
-            drawLine(Lc.dim, Offset(r, r - t), Offset(r, r + t), 1.dp.toPx())
+            drawCircle(
+                Brush.radialGradient(0f to Color.White, 0.3f to Color.White.copy(alpha = 0.45f), 0.75f to Color.White.copy(alpha = 0f), center = c, radius = r),
+                r,
+                c,
+            )
             val a = Math.toRadians(-hue.toDouble())
             val d = (sat / satMax).coerceIn(0f, 1f) * (r - 2.dp.toPx())
             val p = Offset(r + d * cos(a).toFloat(), r + d * sin(a).toFloat())
-            drawCircle(Lc.chrome, 6.dp.toPx(), p, style = Stroke(4.dp.toPx()))
-            drawCircle(Lc.pick, 6.dp.toPx(), p, style = Stroke(2.dp.toPx()))
+            drawCircle(Color(0x33000000), 7.dp.toPx(), p)
+            drawCircle(Color(0xFF1A1A1A), 6.dp.toPx(), p, style = Stroke(2.dp.toPx()))
         }
         Text(label, fontFamily = Inter, fontSize = 12.sp, color = Lc.label, modifier = Modifier.padding(top = 6.dp))
     }

@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.sp
 import ai.storyteller.lightcraft.android.GalleryImage
 import ai.storyteller.lightcraft.android.Histogram
 import ai.storyteller.lightcraft.android.MainTab
+import ai.storyteller.lightcraft.android.Control
 import ai.storyteller.lightcraft.android.Track
 import app.cash.paparazzi.DeviceConfig
 import app.cash.paparazzi.Paparazzi
@@ -216,6 +217,58 @@ class EditorChromeTest {
                         ColorWheel("Highlights", 50f, 25f, 100f, 116.dp, { _, _ -> }, {}, {})
                     }
                 }
+            }
+        }
+    }
+
+    @Test
+    fun mixer() = paparazzi.snapshot {
+        val bands = listOf("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta")
+        val mixer = bands.flatMapIndexed { i, b ->
+            listOf(
+                Control("mixer.$b.hue", "Hue", "mixer", -100f, 100f, 0f, 0, if (i == 5) -18f else 0f, track = Track("hue", band = i)),
+                Control("mixer.$b.sat", "Saturation", "mixer", -100f, 100f, 0f, 0, if (i == 5) 24f else 0f, track = Track("sat", band = i)),
+                Control("mixer.$b.lum", "Luminance", "mixer", -100f, 100f, 0f, 0, if (i == 5) -10f else 0f, track = Track("lum", band = i)),
+            )
+        }
+        LightCraftTheme {
+            Editor(MainTab.Edit) {
+                FlyoutRow(DeskIcon.Presets, "Color Mixer", true) {}
+                MixerBody(mixer, 5, {}, none)
+                SectionDivider()
+                SliderList(
+                    listOf(
+                        SliderSpec("t", "Temp", 12f, -100f, 100f, 0f, track = Track("temp")),
+                        SliderSpec("n", "Tint", -6f, -100f, 100f, 0f, track = Track("tint")),
+                        SliderSpec("v", "Vibrance", 18f, -100f, 100f, 0f, track = Track("gradient", "#7a7a7a", "#d8406a")),
+                        SliderSpec("s", "Saturation", -4f, -100f, 100f, 0f, track = Track("gradient", "#7a7a7a", "#e04a3a")),
+                    ),
+                    none,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun gradingRange() = paparazzi.snapshot {
+        LightCraftTheme {
+            Editor(MainTab.Edit) {
+                FlyoutRow(DeskIcon.GradeAll, "Color Grading", true) {}
+                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf(DeskIcon.GradeAll, DeskIcon.GradeShadows, DeskIcon.GradeMidtones, DeskIcon.GradeHighlights, DeskIcon.Circle).forEachIndexed { i, ic -> LcIconButton(ic, "r$i", active = i == 1, size = 38.dp) {} }
+                }
+                Box(Modifier.fillMaxWidth().padding(top = 10.dp), contentAlignment = Alignment.Center) {
+                    ColorWheel("Shadows", 205f, 18f, 100f, 200.dp, { _, _ -> }, {}, {})
+                }
+                GradeReadout(205f, 18f)
+                SliderList(
+                    listOf(
+                        SliderSpec("l", "Luminance", -8f, -100f, 100f, 0f),
+                        SliderSpec("b", "Blending", 50f, 0f, 100f, 50f),
+                        SliderSpec("a", "Balance", 0f, -100f, 100f, 0f),
+                    ),
+                    none,
+                )
             }
         }
     }

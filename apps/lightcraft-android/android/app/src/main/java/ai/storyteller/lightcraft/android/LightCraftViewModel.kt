@@ -25,6 +25,10 @@ data class Look(
     val profile: String = "lc.color",
     val profileAmount: Float = 100f,
     val wb: String = "asShot",
+    /** Optics: Enable Profile Corrections. */
+    val lensProfile: Boolean = false,
+    /** Optics: Remove Chromatic Aberration. */
+    val removeCa: Boolean = false,
     /** The crop, normalized over the uncropped photo: x0, y0, x1, y1. */
     val crop: List<Float> = listOf(0f, 0f, 1f, 1f),
 )
@@ -523,13 +527,21 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- sliders -------------------------------------------------------------------------------
 
+    /**
+     * Temp and Tint show as −100…+100 (0 = as shot) for photos without a camera Kelvin scale
+     * (JPEG, HEIC, PNG…), as the desktop shows them for rendered files; the engine still takes Kelvin.
+     */
+    @Volatile private var relativeWb = false
+
+    private fun toEngine(id: String, v: Float): Float = if (relativeWb) RelativeWb.toEngine(id, v) else v
+
     /** A slider moved: one undo step per drag (`develop.beginInteraction` … `endInteraction`). */
     fun setControl(id: String, value: Float) {
         _controls.value = _controls.value.map { if (it.id == id) it.copy(value = value) else it }
         viewModelScope.launch(commands) {
             withEngine { e ->
                 begin(e, _controls.value.firstOrNull { it.id == id }?.label ?: "Edit")
-                e.execute("develop.set", JSONObject().put("control", id).put("value", value.toDouble()))
+                e.execute("develop.set", JSONObject().put("control", id).put("value", toEngine(id, value).toDouble()))
             }
             requestRender(draft = true)
         }
@@ -560,13 +572,13 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     fun resetControl(id: String) {
         val default = _controls.value.firstOrNull { it.id == id }?.default ?: return
         _controls.value = _controls.value.map { if (it.id == id) it.copy(value = default) else it }
-        runEdit("develop.set", JSONObject().put("control", id).put("value", default.toDouble()))
+        runEdit("develop.set", JSONObject().put("control", id).put("value", toEngine(id, default).toDouble()))
     }
 
     /** Back to the defaults of every slider in [group], as one undo step. */
     fun resetGroup(group: Group) {
         val values = JSONObject()
-        _controls.value.filter { group.matches(it.id) && it.value != it.default }.forEach { values.put(it.id, it.default.toDouble()) }
+        _controls.value.filter { group.matches(it.id) && it.value != it.default }.forEach { values.put(it.id, toEngine(it.id, it.default).toDouble()) }
         if (values.length() > 0) runEdit("develop.set", JSONObject().put("values", values))
     }
 
@@ -1203,6 +1215,13 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
 
     fun upright(mode: String) = runEdit("geometry.upright", JSONObject().put("mode", mode))
 
+    /** Optics' checkboxes: Enable Profile Corrections, Remove Chromatic Aberration. */
+    fun setLensProfile(on: Boolean) = mergeDevelop(JSONObject().put("optics", JSONObject().put("lens_profile", on)), "Lens Corrections")
+
+    fun setRemoveCa(on: Boolean) = mergeDevelop(JSONObject().put("optics", JSONObject().put("remove_ca", on)), "Remove Chromatic Aberration")
+
+    private fun mergeDevelop(patch: JSONObject, label: String) = runEdit("develop.merge", JSONObject().put("settings", patch).put("label", label))
+
     // ---- brush, Object and Describe masks -------------------------------------------------------
 
     fun setBrush(b: BrushSettings) {
@@ -1585,15 +1604,21 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     /** Sliders (`develop.controls`), point curves and masks (`develop.get`). Command thread only. */
     private fun loadState() {
         val e = engine ?: return
+        val d0 = runCatching { e.execute("develop.get") as? JSONObject }.getOrNull()
+        relativeWb = _editing.value?.let { runCatching { !e.kelvinWb(it) }.getOrNull() } ?: false
+        val asShot = d0?.optJSONObject("wb")?.optString("mode", "")?.equals("asShot", ignoreCase = true) == true
         runCatching { e.execute("develop.controls") as? JSONArray }.getOrNull()?.let { all ->
-            _controls.value = (0 until all.length()).mapNotNull { i -> all.optJSONObject(i)?.let { runCatching { Control.fromJson(it) }.getOrNull() } }
+            val list = (0 until all.length()).mapNotNull { i -> all.optJSONObject(i)?.let { runCatching { Control.fromJson(it) }.getOrNull() } }
+            _controls.value = if (relativeWb) list.map { RelativeWb.show(it, asShot) } else list
         }
-        val d = runCatching { e.execute("develop.get") as? JSONObject }.getOrNull() ?: return
+        val d = d0 ?: return
         _look.value = Look(
             treatment = d.optString("treatment", "color"),
             profile = d.optJSONObject("profile")?.optString("id", "lc.color") ?: "lc.color",
             profileAmount = d.optJSONObject("profile")?.optDouble("amount", 100.0)?.toFloat() ?: 100f,
             wb = d.optJSONObject("wb")?.optString("mode", "asShot") ?: "asShot",
+            lensProfile = d.optJSONObject("optics")?.optBoolean("lens_profile") ?: false,
+            removeCa = d.optJSONObject("optics")?.optBoolean("remove_ca") ?: false,
             crop = d.optJSONObject("crop")?.optJSONObject("geometry")?.optJSONObject("rect")?.let { r ->
                 listOf("x0", "y0", "x1", "y1").map { r.optDouble(it, if (it.endsWith("1")) 1.0 else 0.0).toFloat().coerceIn(0f, 1f) }
             } ?: listOf(0f, 0f, 1f, 1f),

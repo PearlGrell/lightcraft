@@ -29,8 +29,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -59,31 +60,22 @@ fun hex(s: String): Color {
     return Color(0xFF000000 or (v and 0xFFFFFF))
 }
 
-private fun mul(c: Color, f: Float) = Color(c.red * f, c.green * f, c.blue * f, c.alpha)
-
 /** The gradient a track is painted with (`track_stops`), or null for a plain grey one. */
 fun trackStops(t: Track): List<Color>? = when (t.kind) {
-    "temp" -> listOf("#193961", "#47566a", "#60666d", "#70705b", "#737339", "#75742a").map(::hex)
-    "tint" -> listOf("#246123", "#2c552c", "#394739", "#4a3d4c", "#6b336b", "#872c87").map(::hex)
-    "gradient" -> listOf(hex(t.from ?: "#5a5a5a"), hex(t.to ?: "#5a5a5a"))
-    "hue" -> {
-        val i = t.band
-        val prev = BandColors[(i + 7) % 8]
-        val next = BandColors[(i + 1) % 8]
-        val me = BandColors[i]
-        listOf(mul(prev, 0.7f), mul(lerp(prev, me, 0.5f), 0.7f), mul(me, 0.7f), mul(lerp(me, next, 0.5f), 0.7f), mul(next, 0.7f))
-    }
-    "sat" -> {
-        val g = hex("#454343")
-        listOf(g, lerp(g, BandColors[t.band], 0.6f), BandColors[t.band])
-    }
-    "lum" -> {
-        val c = BandColors[t.band]
-        listOf(mul(c, 0.2f), mul(c, 0.55f), lerp(c, Color.White, 0.35f), lerp(c, Color.White, 0.6f))
-    }
-    "rainbow" -> listOf("#aa0000", "#aaaa00", "#009900", "#00aaaa", "#0044cc", "#aa0077", "#aa0000").map(::hex)
+    "temp" -> listOf(hex("#3f6fd8"), hex("#8c9aa6"), hex("#e2c63c"))
+    "tint" -> listOf(hex("#3fb34f"), hex("#8e8e8e"), hex("#c94fc1"))
+    // grey at the start, then the colour (Vibrance, Saturation…)
+    "gradient" -> hex(t.from ?: "#5a5a5a").let { from -> listOf(from.copy(alpha = 0.55f), from, hex(t.to ?: "#5a5a5a")) }
+    // a band's hue shift: from the neighbour below, through the band, to the neighbour above
+    "hue" -> listOf(MixerColors[(t.band + 7) % 8], MixerColors[t.band], MixerColors[(t.band + 1) % 8])
+    // a band's saturation and luminance stay plain, as the mixer's rings already name the colour
+    "sat", "lum" -> null
+    "rainbow" -> listOf("#ff3b30", "#ffcc00", "#4cd964", "#34c8e0", "#3a66f0", "#c04cf0", "#ff3b30").map(::hex)
     else -> null
 }
+
+/** The colour mixer's band colours as its rings and hue tracks show them (brighter than [BandColors]). */
+val MixerColors = listOf("#f0463c", "#f39a2b", "#e8d33a", "#45c35a", "#3cc6c6", "#4677f0", "#9757ec", "#de4cc4").map(::hex)
 
 /** One value as the slider's spec describes it (an engine control, a mask adjustment, a tool setting). */
 data class SliderSpec(
@@ -162,32 +154,24 @@ fun LcSlider(spec: SliderSpec, actions: SliderActions, modifier: Modifier = Modi
             .padding(horizontal = 18.dp),
     ) {
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(spec.label, fontFamily = Inter, fontSize = 13.sp, color = if (enabled) Lc.label else Lc.disabled, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(spec.text(), style = Numbers, fontSize = 13.sp, color = if (enabled) Lc.text else Lc.disabled)
+            Text(spec.label, fontFamily = Inter, fontSize = 14.sp, color = if (enabled) Lc.label else Lc.disabled, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(spec.text(), style = Numbers, fontSize = 14.sp, color = if (enabled) Lc.text else Lc.disabled)
         }
         Canvas(Modifier.fillMaxWidth().height(24.dp)) {
+            val ring = 8.dp.toPx()
             val y = size.height / 2f
-            val h = 1.dp.toPx()
-            val x = (spec.value.coerceIn(spec.min, spec.max) - spec.min) / spec.range * size.width
+            // the track runs between the thumb's centres at min and max, so the ring never clips
+            val x0 = ring + 1.dp.toPx()
+            val x1 = size.width - x0
+            val x = (spec.value.coerceIn(spec.min, spec.max) - spec.min) / spec.range * (x1 - x0) + x0
             val stops = trackStops(spec.track)
-            if (stops == null) {
-                drawRect(Lc.track, Offset(0f, y - h), Size(size.width, h * 2))
+            if (stops == null || !enabled) {
+                drawLine(Lc.track, Offset(x0, y), Offset(x1, y), strokeWidth = 1.5.dp.toPx(), cap = StrokeCap.Round)
             } else {
-                val steps = 48
-                val n = (stops.size - 1).coerceAtLeast(1)
-                for (i in 0 until steps) {
-                    val a = i / steps.toFloat()
-                    val seg = (a * n).toInt().coerceAtMost(n - 1)
-                    val local = a * n - seg
-                    val c = lerp(stops[seg], stops[(seg + 1).coerceAtMost(stops.size - 1)], local)
-                    drawRect(c, Offset(size.width * a, y - h), Size(size.width / steps + 0.5f, h * 2))
-                }
+                drawLine(Brush.horizontalGradient(stops, startX = x0, endX = x1), Offset(x0, y), Offset(x1, y), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
             }
-            val ring = 7.dp.toPx()
-            // the gap around the hollow thumb, then the thumb
-            drawRect(Lc.chrome, Offset(x - ring - 2.dp.toPx(), y - 3.dp.toPx()), Size(ring * 2 + 4.dp.toPx(), 6.dp.toPx()))
             drawCircle(Lc.chrome, ring, Offset(x, y))
-            drawCircle(if (!enabled) Lc.disabled else if (active) Lc.thumbActive else Lc.thumb, ring, Offset(x, y), style = Stroke(2.dp.toPx()))
+            drawCircle(if (!enabled) Lc.disabled else if (active) Lc.thumbActive else Lc.thumb, ring, Offset(x, y), style = Stroke(1.6.dp.toPx()))
         }
     }
 }

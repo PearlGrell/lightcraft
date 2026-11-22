@@ -42,6 +42,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import kotlin.math.roundToInt
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -172,6 +176,8 @@ private fun EditPanel(vm: LightCraftViewModel, all: List<Control>) {
             SliderList((by("enhance.denoise") + by("detail.nr")).map { it.slider() }, actions)
         }
         Section("optics", "Optics", open) {
+            Toggle("Enable Profile Corrections", look.lensProfile) { vm.setLensProfile(it) }
+            Toggle("Remove Chromatic Aberration", look.removeCa) { vm.setRemoveCa(it) }
             SliderList(by("optics.").map { it.slider() }, actions)
         }
         Section("geometry", "Geometry", open) {
@@ -255,31 +261,56 @@ private fun CurveFlyout(vm: LightCraftViewModel, parametric: List<Control>) {
 private val BANDS = listOf("red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta")
 
 /**
- * Color Mixer: the eight bands as colour dots (the desktop's band colours) and the chosen band's
- * Hue, Saturation and Luminance as dials, where three values for one colour read best.
+ * Color Mixer: the eight bands as colour rings (the open one with a dot inside), then that band's
+ * Hue, Saturation and Luminance as sliders, Hue on a track from its neighbour below to above.
  */
 @Composable
 private fun ColorMixer(vm: LightCraftViewModel, mixer: List<Control>) {
     var band by rememberSaveable { mutableIntStateOf(0) }
-    var focus by remember { mutableStateOf<String?>(null) }
+    MixerBody(mixer, band, { band = it }, controlActions(vm))
+}
+
+/** [ColorMixer] without its state: the rings and the open band's three sliders. */
+@Composable
+internal fun MixerBody(mixer: List<Control>, band: Int, onBand: (Int) -> Unit, actions: SliderActions) {
     Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            BandColors.forEachIndexed { i, c ->
-                Box(
-                    Modifier
-                        .size(26.dp)
-                        .clip(CircleShape)
-                        .background(c)
-                        .border(2.dp, if (i == band) Lc.pick else Color.Transparent, CircleShape)
-                        .clickable { band = i; focus = null },
-                )
-            }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            MixerColors.forEachIndexed { i, c -> BandRing(c, i == band, BANDS[i].replaceFirstChar { it.uppercase() }) { onBand(i) } }
         }
-        val name = BANDS[band]
-        val specs = listOf("hue" to "Hue", "sat" to "Saturation", "lum" to "Luminance").mapNotNull { (k, l) ->
-            mixer.firstOrNull { it.id == "mixer.$name.$k" }?.let { DialSpec(it.id, l, it.value, it.min, it.max, it.default, it.decimals) }
+        val name = BANDS.getOrElse(band) { BANDS[0] }
+        SliderList(
+            listOf("hue" to "Hue", "sat" to "Saturation", "lum" to "Luminance").mapNotNull { (k, l) -> mixer.firstOrNull { it.id == "mixer.$name.$k" }?.slider(l) },
+            actions,
+        )
+    }
+}
+
+/** Under a single range's wheel: "Hue 205°  Saturation 18". */
+@Composable
+internal fun GradeReadout(hue: Float, sat: Float) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
+        Text("Hue  ${hue.roundToInt()}°", fontFamily = Inter, fontSize = 14.sp, color = Lc.label)
+        Text("Saturation  ${sat.roundToInt()}", fontFamily = Inter, fontSize = 14.sp, color = Lc.label)
+    }
+}
+
+/** A mixer band: a coloured ring, with a dot inside when it is the open band. */
+@Composable
+private fun BandRing(colour: Color, on: Boolean, label: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .semantics {
+                contentDescription = label
+                selected = on
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.size(20.dp).border(2.dp, colour, CircleShape), contentAlignment = Alignment.Center) {
+            if (on) Box(Modifier.size(10.dp).clip(CircleShape).background(colour))
         }
-        DialGrid(specs, focus, { focus = if (focus == it) null else it }, dialActions(vm), columns = 3, maxHeight = 220.dp)
     }
 }
 
@@ -326,19 +357,20 @@ private fun ColorGrading(vm: LightCraftViewModel, grading: List<Control>) {
                 }
             }
         } else {
-            Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxWidth().padding(top = 10.dp), contentAlignment = Alignment.Center) {
                 wheel(key, RANGES[range].second, 200.dp)
             }
-            SliderList(
-                listOf("hue" to "Hue", "sat" to "Saturation", "lum" to "Luminance").mapNotNull { (k, l) -> get("grading.$key.$k")?.slider(l) },
-                controlActions(vm),
-            )
+            val hue = get("grading.$key.hue")
+            val sat = get("grading.$key.sat")
+            if (hue != null && sat != null) {
+                GradeReadout(hue.value, sat.value)
+            }
+            SliderList(listOfNotNull(get("grading.$key.lum")?.slider("Luminance")), controlActions(vm))
         }
         SliderList(grading.filter { it.id == "grading.blending" || it.id == "grading.balance" }.map { it.slider() }, controlActions(vm))
     }
 }
 
-private fun dialActions(vm: LightCraftViewModel) = DialActions(change = { id, v -> vm.setControl(id, v) }, done = vm::finishInteraction, reset = { id -> vm.resetControl(id) })
 
 // ---- Crop ---------------------------------------------------------------------------------------
 

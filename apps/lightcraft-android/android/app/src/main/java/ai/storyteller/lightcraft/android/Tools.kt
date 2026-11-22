@@ -163,3 +163,26 @@ object Tools {
 
     val aspects = listOf(Aspect("Original", 0f), Aspect("1:1", 1f), Aspect("4:5", 4f / 5f), Aspect("3:2", 3f / 2f), Aspect("16:9", 16f / 9f))
 }
+
+/**
+ * Temp and Tint as −100…+100 for photos without a camera Kelvin scale: Temp maps linearly in
+ * mireds around 6500 K (±100 = ±80 mireds), Tint passes through; As Shot reads as 0.
+ */
+object RelativeWb {
+    private const val NEUTRAL_MIRED = 1e6 / 6500.0
+
+    fun kelvinToRel(k: Float): Float =
+        if (k <= 0f || !k.isFinite()) 0f else ((NEUTRAL_MIRED - 1e6 / k) / 0.8).toFloat().coerceIn(-100f, 100f)
+
+    fun relToKelvin(r: Float): Float = (1e6 / (NEUTRAL_MIRED - r.coerceIn(-100f, 100f) * 0.8)).toFloat()
+
+    /** The engine's Temp / Tint controls as the relative sliders show them; As Shot reads as 0. */
+    fun show(c: Control, asShot: Boolean): Control = when (c.id) {
+        "wb.temp" -> c.copy(min = -100f, max = 100f, default = 0f, decimals = 0, unit = "", value = if (asShot) 0f else kelvinToRel(c.value))
+        "wb.tint" -> c.copy(min = -100f, max = 100f, default = 0f, value = if (asShot) 0f else c.value.coerceIn(-100f, 100f))
+        else -> c
+    }
+
+    /** A relative slider value as the engine's control value. */
+    fun toEngine(id: String, v: Float): Float = if (id == "wb.temp") relToKelvin(v) else v
+}
