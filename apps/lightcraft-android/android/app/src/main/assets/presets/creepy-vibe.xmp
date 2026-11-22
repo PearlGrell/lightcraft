@@ -1,0 +1,52 @@
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+   xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+   crs:Version="15.0"
+   crs:ProcessVersion="11.0"
+   crs:Group="User Presets"
+   crs:Exposure2012="-0.52"
+   crs:Contrast2012="+35"
+   crs:Highlights2012="-65"
+   crs:Shadows2012="-40"
+   crs:Whites2012="+45"
+   crs:IncrementalTemperature="+12"
+   crs:IncrementalTint="-10"
+   crs:Vibrance="-30"
+   crs:Saturation="-25"
+   crs:SplitToningShadowHue="85"
+   crs:SplitToningShadowSaturation="25"
+   crs:ColorGradeShadowLum="0"
+   crs:ColorGradeBlending="50"
+   crs:SplitToningBalance="-35"
+   crs:HueAdjustmentOrange="-10"
+   crs:SaturationAdjustmentOrange="-40"
+   crs:LuminanceAdjustmentOrange="-20"
+   crs:HueAdjustmentGreen="-40"
+   crs:SaturationAdjustmentGreen="-65"
+   crs:LuminanceAdjustmentGreen="-40"
+   crs:HueAdjustmentBlue="-20"
+   crs:SaturationAdjustmentBlue="-70"
+   crs:LuminanceAdjustmentBlue="-44"
+   crs:HueAdjustmentMagenta="0"
+   crs:SaturationAdjustmentMagenta="-81"
+   crs:LuminanceAdjustmentMagenta="-20"
+   crs:Texture="+20"
+   crs:Clarity2012="+15"
+   crs:Dehaze="+18"
+   crs:PostCropVignetteAmount="-36"
+   crs:PostCropVignetteMidpoint="35"
+   crs:PostCropVignetteRoundness="0"
+   crs:PostCropVignetteFeather="75"
+   crs:PostCropVignetteHighlightContrast="0"
+   crs:GrainAmount="35"
+   crs:GrainSize="28"
+   crs:GrainFrequency="65">
+   <crs:Name>
+    <rdf:Alt>
+     <rdf:li xml:lang="x-default">Creepy Vibe</rdf:li>
+    </rdf:Alt>
+   </crs:Name>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>

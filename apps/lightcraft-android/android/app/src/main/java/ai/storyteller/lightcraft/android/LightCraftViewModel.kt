@@ -44,6 +44,9 @@ data class Preset(val id: String, val name: String, val group: String, val built
 /** The group a preset saved on the phone goes to unless the user names another. */
 const val USER_PRESETS = "User Presets"
 
+/** Set once the bundled presets were imported (see `seedPresets`). */
+private const val SEEDED_PRESETS = "seededPresets.v1"
+
 /** A point of a tone curve, both coordinates 0..1. */
 data class CurvePoint(val x: Float, val y: Float)
 
@@ -373,6 +376,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
                 runCatching { e.setModelsDir(File(app.filesDir, "models").absolutePath) }
                 loadSamSource()
                 engine = e
+                seedPresets(e)
                 _marks.value = e.galleryMarks()
                 _ready.value = true
             } catch (t: Throwable) {
@@ -752,6 +756,28 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
             if (_lastPreset.value == preset.id) _lastPreset.value = null
             _presetThumbs.value = _presetThumbs.value - preset.id
             readPresets()
+        }
+    }
+
+    /**
+     * The presets the app ships as the user's own (`assets/presets/*.xmp`), imported into the
+     * library once, on the first start that has them: they are ordinary saved presets from then
+     * on (deletable; a deleted one doesn't come back). Command thread only.
+     */
+    private fun seedPresets(e: Engine) {
+        val app = getApplication<Application>()
+        if (prefs.getBoolean(SEEDED_PRESETS, false)) return
+        try {
+            val names = app.assets.list("presets")?.filter { it.endsWith(".xmp", ignoreCase = true) }.orEmpty()
+            if (names.isEmpty()) return
+            val dir = File(app.cacheDir, "seed-presets").apply { deleteRecursively(); mkdirs() }
+            for (n in names) app.assets.open("presets/$n").use { input -> File(dir, n).outputStream().use { input.copyTo(it) } }
+            e.execute("preset.import", JSONObject().put("paths", JSONArray(names.map { File(dir, it).absolutePath })).put("group", USER_PRESETS))
+            prefs.edit().putBoolean(SEEDED_PRESETS, true).apply()
+            dir.deleteRecursively()
+        } catch (t: Exception) {
+            // not fatal: the app works without them, and the next start tries again
+            Log.w(tag, "bundled presets", t)
         }
     }
 

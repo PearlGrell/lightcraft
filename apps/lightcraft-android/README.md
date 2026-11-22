@@ -63,7 +63,9 @@ gradient-track slider with a hollow thumb, section headers, flyout rows, bordere
   contiguous, anti-alias, sample), undo, restore, transparent PNG.
 - **Presets**: groups as sections, live thumbnails (`Mobile::preset_thumbnail`). **Save** names
   the current look and its group (`preset.create`, kept in the library's `presets.json`);
-  long-press a saved preset to delete it (`preset.delete`).
+  long-press a saved preset to delete it (`preset.delete`). On first start the app imports the
+  XMP presets in `app/src/main/assets/presets/` into User Presets, once (personal looks; see
+  `assets/ATTRIBUTION.md`).
 - **Export**: JPEG, PNG, WebP or AVIF, size and quality, then Save to Gallery (Pictures/LightCraft)
   or Share. **Info**: file, size, capture time, camera, lens, exposure, place; stars and flags.
 

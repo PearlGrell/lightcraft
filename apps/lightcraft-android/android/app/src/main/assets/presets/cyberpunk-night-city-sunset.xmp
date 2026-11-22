@@ -1,0 +1,64 @@
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+   xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+   crs:Version="15.0"
+   crs:ProcessVersion="11.0"
+   crs:Group="User Presets"
+   crs:Exposure2012="+0.10"
+   crs:Contrast2012="+20"
+   crs:Highlights2012="-35"
+   crs:Shadows2012="+20"
+   crs:Whites2012="+10"
+   crs:Blacks2012="-24"
+   crs:IncrementalTemperature="-2"
+   crs:IncrementalTint="+20"
+   crs:Vibrance="+25"
+   crs:Saturation="-5"
+   crs:HueAdjustmentRed="-12"
+   crs:SaturationAdjustmentRed="+8"
+   crs:LuminanceAdjustmentRed="+4"
+   crs:HueAdjustmentOrange="-15"
+   crs:SaturationAdjustmentOrange="-12"
+   crs:LuminanceAdjustmentOrange="+10"
+   crs:HueAdjustmentYellow="-35"
+   crs:SaturationAdjustmentYellow="-45"
+   crs:LuminanceAdjustmentYellow="+4"
+   crs:HueAdjustmentGreen="+20"
+   crs:SaturationAdjustmentGreen="-65"
+   crs:LuminanceAdjustmentGreen="-15"
+   crs:HueAdjustmentBlue="+22"
+   crs:SaturationAdjustmentBlue="+10"
+   crs:LuminanceAdjustmentBlue="0"
+   crs:HueAdjustmentPurple="-8"
+   crs:SaturationAdjustmentPurple="+20"
+   crs:LuminanceAdjustmentPurple="+6"
+   crs:HueAdjustmentMagenta="-5"
+   crs:SaturationAdjustmentMagenta="+20"
+   crs:LuminanceAdjustmentMagenta="+10"
+   crs:SplitToningShadowHue="230"
+   crs:SplitToningShadowSaturation="23"
+   crs:ColorGradeShadowLum="-4"
+   crs:ColorGradeMidtoneHue="285"
+   crs:ColorGradeMidtoneSat="9"
+   crs:ColorGradeMidtoneLum="+2"
+   crs:SplitToningHighlightHue="345"
+   crs:SplitToningHighlightSaturation="22"
+   crs:ColorGradeHighlightLum="+5">
+   <crs:Name>
+    <rdf:Alt>
+     <rdf:li xml:lang="x-default">Cyberpunk: Night City Sunset</rdf:li>
+    </rdf:Alt>
+   </crs:Name>
+   <crs:ToneCurvePV2012>
+    <rdf:Seq>
+     <rdf:li>0, 10</rdf:li>
+     <rdf:li>30, 24</rdf:li>
+     <rdf:li>128, 130</rdf:li>
+     <rdf:li>220, 232</rdf:li>
+     <rdf:li>255, 255</rdf:li>
+    </rdf:Seq>
+   </crs:ToneCurvePV2012>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>

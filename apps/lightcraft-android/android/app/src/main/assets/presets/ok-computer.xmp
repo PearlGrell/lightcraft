@@ -1,0 +1,63 @@
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+   xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+   crs:Version="15.0"
+   crs:ProcessVersion="11.0"
+   crs:Group="User Presets"
+   crs:Contrast2012="-12"
+   crs:Highlights2012="-18"
+   crs:Shadows2012="+30"
+   crs:Whites2012="+22"
+   crs:Blacks2012="-12"
+   crs:Texture="-5"
+   crs:Clarity2012="-12"
+   crs:Dehaze="-8"
+   crs:PostCropVignetteAmount="0"
+   crs:HueAdjustmentRed="+5"
+   crs:SaturationAdjustmentRed="-30"
+   crs:LuminanceAdjustmentRed="+8"
+   crs:HueAdjustmentOrange="-4"
+   crs:SaturationAdjustmentOrange="-28"
+   crs:LuminanceAdjustmentOrange="+12"
+   crs:HueAdjustmentYellow="+15"
+   crs:SaturationAdjustmentYellow="-55"
+   crs:LuminanceAdjustmentYellow="+18"
+   crs:HueAdjustmentGreen="+30"
+   crs:SaturationAdjustmentGreen="-45"
+   crs:LuminanceAdjustmentGreen="+12"
+   crs:HueAdjustmentAqua="-15"
+   crs:SaturationAdjustmentAqua="-5"
+   crs:LuminanceAdjustmentAqua="+20"
+   crs:HueAdjustmentPurple="0"
+   crs:SaturationAdjustmentPurple="-50"
+   crs:LuminanceAdjustmentPurple="+10"
+   crs:HueAdjustmentMagenta="0"
+   crs:SaturationAdjustmentMagenta="-50"
+   crs:LuminanceAdjustmentMagenta="+8"
+   crs:SplitToningShadowHue="205"
+   crs:SplitToningShadowSaturation="18"
+   crs:ColorGradeShadowLum="+5"
+   crs:ColorGradeMidtoneHue="185"
+   crs:ColorGradeMidtoneSat="10"
+   crs:ColorGradeMidtoneLum="+5"
+   crs:SplitToningHighlightHue="195"
+   crs:SplitToningHighlightSaturation="12"
+   crs:ColorGradeHighlightLum="+8">
+   <crs:Name>
+    <rdf:Alt>
+     <rdf:li xml:lang="x-default">OK Computer</rdf:li>
+    </rdf:Alt>
+   </crs:Name>
+   <crs:ToneCurvePV2012>
+    <rdf:Seq>
+     <rdf:li>0, 20</rdf:li>
+     <rdf:li>36, 44</rdf:li>
+     <rdf:li>115, 128</rdf:li>
+     <rdf:li>192, 207</rdf:li>
+     <rdf:li>255, 250</rdf:li>
+    </rdf:Seq>
+   </crs:ToneCurvePV2012>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
