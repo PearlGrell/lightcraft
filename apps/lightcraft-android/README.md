@@ -25,10 +25,13 @@ gradient-track slider with a hollow thumb, section headers, flyout rows, bordere
 - **Launch**: the LightCraft lynx on the canvas (AndroidX SplashScreen) until the library is open.
 - **Library = the phone's gallery**, laid out as the desktop's library: a **sidebar** (drawer) with
   My Photos (All Photos, Recently Added, Picks, Edited), Albums (the phone's folders), By Date and
-  **Recently Deleted**; **Search Photos** and a rating / flag **filter** on the top bar; the
+  **Recently Deleted**; **Search Photos** and a rating / flag / **folders** filter on the top bar (tick any
+  number of the phone's folders to show only those; kept in the app's settings, like the rating
+  and flag filters; an album opened from the sidebar always shows whole); the
   **justified grid** (photos at their own shape) with stars, pick / reject flags and an edited mark;
   the bottom bar's view modes (justified, square, one per row), sort, and a thumbnail-size slider
-  (or pinch). Press and hold to select: rate 0–5 stars, flag pick / reject, **Copy Edit
+  (or pinch). The grid keeps its scroll position, size and filters while a photo is open. Press
+  and hold to select: rate 0–5 stars, flag pick / reject, **Copy Edit
   Settings** / Paste, share, and **delete** (to Android's trash, Recently Deleted, on Android 11+:
   restore or delete for good there; photos deleted for good leave the catalog with their edits,
   `Mobile::forget_paths`). Opening a photo imports it in place (`Mobile::photo_for_path`).

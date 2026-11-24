@@ -60,6 +60,16 @@ class DialMathTest {
     }
 
     @Test
+    fun the_folder_filter_keeps_the_picked_folders_and_never_empties_the_library() {
+        fun g(id: Long, album: String) = ai.storyteller.lightcraft.android.GalleryImage(id, android.net.Uri.EMPTY, null, "$id.jpg", "image/jpeg", album = album)
+        val photos = listOf(g(1, "Camera"), g(2, "Screenshots"), g(3, "WhatsApp"), g(4, "Camera"))
+        assertEquals(photos, homePhotos(photos, emptySet()))
+        assertEquals(listOf(1L, 3L, 4L), homePhotos(photos, setOf("Camera", "WhatsApp")).map { it.id })
+        // a picked folder that has gone from the phone: everything, not an empty library
+        assertEquals(photos, homePhotos(photos, setOf("Deleted folder")))
+    }
+
+    @Test
     fun a_spec_knows_when_it_changed() {
         assertFalse(DialSpec("a", "A", 0f, -100f, 100f, 0f).changed)
         assertTrue(DialSpec("a", "A", 1f, -100f, 100f, 0f).changed)

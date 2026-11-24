@@ -4,6 +4,8 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.util.Log
 import android.util.LruCache
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import java.io.File
@@ -43,6 +45,12 @@ data class Preset(val id: String, val name: String, val group: String, val built
 
 /** The group a preset saved on the phone goes to unless the user names another. */
 const val USER_PRESETS = "User Presets"
+
+/** Library filters kept in the app's settings. */
+private const val HOME_FOLDERS = "library.folders"
+private const val FILTER_RATING = "library.minRating"
+private const val FILTER_FLAG = "library.flag"
+private val FLAG_FILTERS = setOf("any", "pick", "reject", "none")
 
 /** Set once the bundled presets were imported (see `seedPresets`). */
 private const val SEEDED_PRESETS = "seededPresets.v1"
@@ -1072,6 +1080,7 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setSource(s: LibrarySource) {
+        if (s != _source.value) scrollLibraryToTop()
         _source.value = s
         _selection.value = emptySet()
     }
@@ -1803,6 +1812,72 @@ class LightCraftViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private val prefs by lazy { getApplication<Application>().getSharedPreferences("lightcraft", android.content.Context.MODE_PRIVATE) }
+
+    // ---- library view state (kept here, not in the screen, so opening a photo forgets nothing) --
+
+    /**
+     * Where each layout of the library grid is scrolled to. The library screen leaves composition
+     * while a photo is open; holding the states here brings the grid back where it was.
+     */
+    val justifiedScroll = LazyListState()
+    val singleScroll = LazyListState()
+    val squareScroll = LazyGridState()
+
+    /** Back to the top of every layout: the photos shown changed (another source or filter). */
+    private fun scrollLibraryToTop() {
+        justifiedScroll.requestScrollToItem(0)
+        singleScroll.requestScrollToItem(0)
+        squareScroll.requestScrollToItem(0)
+    }
+
+    private val _rowHeight = MutableStateFlow(130f)
+    /** The library grid's row height in dp (pinch or the size slider). */
+    val rowHeight: StateFlow<Float> = _rowHeight.asStateFlow()
+
+    fun setRowHeight(h: Float) {
+        if (h.isFinite()) _rowHeight.value = h
+    }
+
+    private val _folders = MutableStateFlow(prefs.getStringSet(HOME_FOLDERS, null)?.toSet() ?: emptySet())
+    /**
+     * The gallery folders (albums) the library shows; empty shows them all. Applies to every source
+     * but an album opened on its own and Recently Deleted. Kept in the app's settings.
+     */
+    val folders: StateFlow<Set<String>> = _folders.asStateFlow()
+
+    fun setFolders(names: Set<String>) {
+        if (names == _folders.value) return
+        _folders.value = names
+        prefs.edit().putStringSet(HOME_FOLDERS, names).apply()
+        _selection.value = emptySet()
+        scrollLibraryToTop()
+    }
+
+    fun toggleFolder(name: String) = setFolders(if (name in _folders.value) _folders.value - name else _folders.value + name)
+
+    private val _minRating = MutableStateFlow(prefs.getInt(FILTER_RATING, 0).coerceIn(0, 5))
+    /** The library's rating filter: photos with at least this many stars (0: any). */
+    val minRating: StateFlow<Int> = _minRating.asStateFlow()
+
+    private val _flagFilter = MutableStateFlow(prefs.getString(FILTER_FLAG, "any")?.takeIf { it in FLAG_FILTERS } ?: "any")
+    /** The library's flag filter: `any`, `pick`, `reject` or `none` (unflagged). */
+    val flagFilter: StateFlow<String> = _flagFilter.asStateFlow()
+
+    fun setMinRating(r: Int) {
+        val v = r.coerceIn(0, 5)
+        if (v == _minRating.value) return
+        _minRating.value = v
+        prefs.edit().putInt(FILTER_RATING, v).apply()
+        scrollLibraryToTop()
+    }
+
+    fun setFlagFilter(f: String) {
+        val v = f.takeIf { it in FLAG_FILTERS } ?: "any"
+        if (v == _flagFilter.value) return
+        _flagFilter.value = v
+        prefs.edit().putString(FILTER_FLAG, v).apply()
+        scrollLibraryToTop()
+    }
 
     private val _samSource = MutableStateFlow(SamSource())
     /** Where SAM 3 downloads from (kept in the app's private settings). */

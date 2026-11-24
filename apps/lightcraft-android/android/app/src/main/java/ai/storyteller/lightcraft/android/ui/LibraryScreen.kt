@@ -61,8 +61,6 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -127,13 +125,19 @@ fun LibraryScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
     val selection by vm.selection.collectAsStateWithLifecycle()
     val copied by vm.copied.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
-    var minRating by rememberSaveable { mutableIntStateOf(0) }
-    var flagFilter by rememberSaveable { mutableStateOf("any") }
-    var rowHeight by rememberSaveable { mutableFloatStateOf(130f) }
+    val minRating by vm.minRating.collectAsStateWithLifecycle()
+    val flagFilter by vm.flagFilter.collectAsStateWithLifecycle()
+    val folders by vm.folders.collectAsStateWithLifecycle()
+    val rowHeight by vm.rowHeight.collectAsStateWithLifecycle()
     var confirm by remember { mutableStateOf<String?>(null) }
     val markOf = { g: GalleryImage -> vm.markOf(g, marks) }
-    val shown = remember(photos, trash, marks, source, query, sort, minRating, flagFilter) {
-        libraryView(photos, trash, source, query, sort, markOf).filter { g ->
+    val albums = remember(photos) { photos.groupingBy { it.album }.eachCount().toList().sortedByDescending { it.second } }
+    // the folders picked in the filter (those still on the phone; none picked shows them all)
+    val home = remember(photos, folders) { homePhotos(photos, folders) }
+    val shown = remember(photos, home, trash, marks, source, query, sort, minRating, flagFilter) {
+        // an album opened from the sidebar shows all of it, whatever the folder filter
+        val base = if (source is LibrarySource.Album) photos else home
+        libraryView(base, trash, source, query, sort, markOf).filter { g ->
             val m = markOf(g)
             (m?.rating ?: 0) >= minRating && when (flagFilter) {
                 "pick" -> m?.flag == "pick"
@@ -163,7 +167,7 @@ fun LibraryScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
         drawerState = drawer,
         drawerContent = {
             ModalDrawerSheet(drawerContainerColor = Lc.chrome, drawerShape = RoundedCornerShape(0.dp), modifier = Modifier.width(300.dp)) {
-                Sidebar(photos, trash, marks, source, vm) { s ->
+                Sidebar(home, albums, trash, marks, source, vm) { s ->
                     vm.setSource(s)
                     scope.launch { drawer.close() }
                 }
@@ -179,7 +183,11 @@ fun LibraryScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
                             if (deleted) confirm = "forever" else if (Build.VERSION.SDK_INT >= 30) vm.deleteSelected() else confirm = "delete"
                         }
                     } else {
-                        TopBar(query, vm::setQuery, minRating, flagFilter, onSidebar = { scope.launch { drawer.open() } }, onRating = { minRating = it }, onFlag = { flagFilter = it })
+                        TopBar(
+                            query, vm::setQuery, minRating, flagFilter, albums.map { it.first }, folders,
+                            onSidebar = { scope.launch { drawer.open() } }, onRating = vm::setMinRating, onFlag = vm::setFlagFilter,
+                            onFolder = vm::toggleFolder, onAllFolders = { vm.setFolders(emptySet()) },
+                        )
                     }
                     if (!ready || busy) {
                         LinearProgressIndicator(Modifier.fillMaxWidth().height(1.dp), color = Lc.accent, trackColor = Lc.chrome)
@@ -203,8 +211,8 @@ fun LibraryScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
                                 context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)))
                             }
                         }
-                        shown.isEmpty() -> Empty(source, query.isNotBlank() || minRating > 0 || flagFilter != "any")
-                        else -> Box(Modifier.fillMaxSize().pinchSize(rowHeight) { rowHeight = it }) {
+                        shown.isEmpty() -> Empty(source, query.isNotBlank() || minRating > 0 || flagFilter != "any" || folders.isNotEmpty())
+                        else -> Box(Modifier.fillMaxSize().pinchSize({ rowHeight }) { vm.setRowHeight(it) }) {
                             PhotoGrid(vm, shown, mode, rowHeight.dp, version, marks, selection, selecting)
                         }
                     }
@@ -215,7 +223,7 @@ fun LibraryScreen(vm: LightCraftViewModel, snackbar: SnackbarHostState) {
                     rating = shown.filter { it.id in selection }.map { markOf(it)?.rating ?: 0 }.distinct().singleOrNull() ?: 0,
                     flag = shown.filter { it.id in selection }.map { markOf(it)?.flag ?: "none" }.distinct().singleOrNull() ?: "",
                     single = selection.size == 1,
-                ) { rowHeight = it }
+                ) { vm.setRowHeight(it) }
             }
         }
     }
@@ -240,9 +248,13 @@ private fun TopBar(
     onQuery: (String) -> Unit,
     minRating: Int,
     flag: String,
+    albums: List<String>,
+    folders: Set<String>,
     onSidebar: () -> Unit,
     onRating: (Int) -> Unit,
     onFlag: (String) -> Unit,
+    onFolder: (String) -> Unit,
+    onAllFolders: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -269,7 +281,7 @@ private fun TopBar(
         }
         Spacer(Modifier.width(6.dp))
         Box {
-            LcIconButton(DeskIcon.Filter, "Filter", active = minRating > 0 || flag != "any") { menu = true }
+            LcIconButton(DeskIcon.Filter, "Filter", active = minRating > 0 || flag != "any" || folders.isNotEmpty()) { menu = true }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = Lc.chrome) {
                 MenuLabel("Rating")
                 listOf(0 to "Any rating", 1 to "★ and up", 2 to "★★ and up", 3 to "★★★ and up", 4 to "★★★★ and up", 5 to "★★★★★").forEach { (r, label) ->
@@ -278,6 +290,12 @@ private fun TopBar(
                 MenuLabel("Flag")
                 listOf("any" to "Any flag", "pick" to "Picked", "reject" to "Rejected", "none" to "Unflagged").forEach { (f, label) ->
                     MenuCheck(label, flag == f) { onFlag(f); menu = false }
+                }
+                if (albums.isNotEmpty()) {
+                    // several can be picked: the menu stays open while ticking them
+                    MenuLabel("Folders")
+                    MenuCheck("All folders", folders.none { it in albums }, onClick = onAllFolders)
+                    albums.forEach { a -> MenuCheck(a.ifEmpty { "Other" }, a in folders) { onFolder(a) } }
                 }
             }
         }
@@ -314,6 +332,7 @@ private fun SelectionBar(count: Int, deleted: Boolean, onClose: () -> Unit, onAl
 @Composable
 private fun Sidebar(
     photos: List<GalleryImage>,
+    albums: List<Pair<String, Int>>,
     trash: List<GalleryImage>,
     marks: Map<String, Mark>,
     source: LibrarySource,
@@ -321,7 +340,6 @@ private fun Sidebar(
     onSource: (LibrarySource) -> Unit,
 ) {
     val markOf = { g: GalleryImage -> vm.markOf(g, marks) }
-    val albums = remember(photos) { photos.groupingBy { it.album }.eachCount().toList().sortedByDescending { it.second } }
     val years = remember(photos) {
         val zone = java.time.ZoneId.systemDefault()
         photos.groupingBy { java.time.Instant.ofEpochMilli(it.taken).atZone(zone).year }.eachCount().toList().sortedByDescending { it.first }
@@ -394,6 +412,16 @@ internal fun SideRow(icon: DeskIcon, label: String, count: Int, on: Boolean, onC
 
 // ---- the grid -----------------------------------------------------------------------------------
 
+/**
+ * The photos of the folders in [folders] (the library's folder filter); all of them when none of
+ * the picked folders is on the phone any more, so a stale choice never empties the library.
+ */
+internal fun homePhotos(photos: List<GalleryImage>, folders: Set<String>): List<GalleryImage> {
+    if (folders.isEmpty()) return photos
+    val kept = photos.filter { it.album in folders }
+    return kept.ifEmpty { photos }
+}
+
 /** One row of the justified grid: its photos and the height they share. */
 internal data class JustifiedRow(val images: List<GalleryImage>, val height: Float)
 
@@ -439,6 +467,7 @@ private fun PhotoGrid(
             val cols = (360f / rowHeight.value * 2.6f).toInt().coerceIn(2, 8)
             LazyVerticalGrid(
                 columns = GridCells.Fixed(cols),
+                state = vm.squareScroll,
                 horizontalArrangement = Arrangement.spacedBy(GAP.dp),
                 verticalArrangement = Arrangement.spacedBy(GAP.dp),
                 contentPadding = PaddingValues(GAP.dp),
@@ -449,6 +478,7 @@ private fun PhotoGrid(
         }
         ViewMode.Single -> LazyColumn(
             Modifier.fillMaxSize(),
+            state = vm.singleScroll,
             contentPadding = PaddingValues(GAP.dp),
             verticalArrangement = Arrangement.spacedBy(GAP.dp),
         ) {
@@ -459,6 +489,7 @@ private fun PhotoGrid(
             val rows = remember(shown, width, rowHeight) { justify(shown, width, rowHeight.value, GAP.toFloat()) }
             LazyColumn(
                 Modifier.fillMaxSize(),
+                state = vm.justifiedScroll,
                 contentPadding = PaddingValues(GAP.dp),
                 verticalArrangement = Arrangement.spacedBy(GAP.dp),
             ) {
@@ -583,10 +614,11 @@ private fun BottomBar(
 }
 
 /** Two-finger pinch resizes the thumbnails (as the size slider does); one finger still scrolls. */
-private fun Modifier.pinchSize(value: Float, set: (Float) -> Unit) = pointerInput(Unit) {
+private fun Modifier.pinchSize(value: () -> Float, set: (Float) -> Unit) = pointerInput(Unit) {
     awaitEachGesture {
         awaitFirstDown(requireUnconsumed = false)
-        var v = value
+        // the size as it is now (the gesture handler outlives the composition that made it)
+        var v = value()
         do {
             val event = awaitPointerEvent()
             if (event.changes.count { it.pressed } >= 2) {
